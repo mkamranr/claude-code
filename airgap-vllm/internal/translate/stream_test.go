@@ -144,3 +144,118 @@ func TestFinishIsIdempotent(t *testing.T) {
 		t.Errorf("second Finish emitted %d extra events", len(r.events)-n)
 	}
 }
+
+// FINDING 1: Verify multiple tool calls nest strictly — no overlapping blocks.
+func TestMultipleToolCallsNestStrictly(t *testing.T) {
+	r := &recorder{}
+	tr := NewStreamTranslator(r, "msg_1", "m", func() string { return "gen" })
+	tr.Start()
+
+	var tool1, tool2, final Chunk
+	json.Unmarshal([]byte(`{"choices":[{"delta":{"tool_calls":[
+		{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"a\""}}]}}]}`), &tool1)
+	json.Unmarshal([]byte(`{"choices":[{"delta":{"tool_calls":[
+		{"index":1,"id":"call_2","function":{"name":"write","arguments":"{\"b\""}}]}}]}`), &tool2)
+	json.Unmarshal([]byte(`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`), &final)
+
+	tr.Chunk(tool1)
+	tr.Chunk(tool2)
+	tr.Chunk(final)
+	tr.Finish()
+
+	names := r.names()
+	// Verify strict alternation: at most one block open at a time.
+	openCount := 0
+	for i, name := range names {
+		if name == "content_block_start" {
+			openCount++
+			if openCount > 1 {
+				t.Fatalf("event %d: content_block_start while %d blocks already open; full: %v", i, openCount-1, names)
+			}
+		} else if name == "content_block_stop" {
+			openCount--
+			if openCount < 0 {
+				t.Fatalf("event %d: content_block_stop with no open block; full: %v", i, names)
+			}
+		}
+	}
+	if openCount != 0 {
+		t.Fatalf("at end, %d blocks still open; full: %v", openCount, names)
+	}
+
+	// Count: two tool blocks should produce 2 starts and 2 stops.
+	starts := 0
+	stops := 0
+	for _, name := range names {
+		if name == "content_block_start" {
+			starts++
+		} else if name == "content_block_stop" {
+			stops++
+		}
+	}
+	if starts != 2 || stops != 2 {
+		t.Fatalf("expected 2 content_block_start and 2 content_block_stop, got %d starts and %d stops; full: %v", starts, stops, names)
+	}
+}
+
+// FINDING 2a: Usage on final chunk carries input_tokens into message_delta.
+func TestUsageOnFinalChunkReachesMessageDelta(t *testing.T) {
+	r := &recorder{}
+	tr := NewStreamTranslator(r, "msg_1", "m", func() string { return "gen" })
+	tr.Start()
+	tr.Chunk(chunkText("Hello"))
+
+	var final Chunk
+	json.Unmarshal([]byte(`{"choices":[{"delta":{},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":10,"completion_tokens":3}}`), &final)
+	tr.Chunk(final)
+	tr.Finish()
+
+	joined := strings.Join(r.events, "\n")
+	// message_delta should contain input_tokens from the final chunk.
+	if !strings.Contains(joined, `"input_tokens":10`) {
+		t.Error("input_tokens not in message_delta when usage on final chunk")
+	}
+}
+
+// FINDING 2b: Usage on first chunk reaches message_start.
+func TestUsageOnFirstChunkReachesMessageStart(t *testing.T) {
+	r := &recorder{}
+	tr := NewStreamTranslator(r, "msg_1", "m", func() string { return "gen" })
+
+	var first Chunk
+	json.Unmarshal([]byte(`{"choices":[{"delta":{"content":"Hi"}}],
+		"usage":{"prompt_tokens":5,"completion_tokens":0}}`), &first)
+	tr.Chunk(first)
+	tr.Finish()
+
+	// message_start should contain input_tokens from the first chunk.
+	// Look for the pattern in message_start event (first event).
+	if !strings.Contains(r.events[0], `"input_tokens":5`) {
+		t.Errorf("input_tokens not in message_start when usage on first chunk; message_start = %s", r.events[0])
+	}
+}
+
+// FINDING 3: Truncation (finish_reason "length") is not masked by tool_use presence.
+func TestMaxTokensNotMaskedByToolPresence(t *testing.T) {
+	r := &recorder{}
+	tr := NewStreamTranslator(r, "msg_1", "m", func() string { return "gen" })
+	tr.Start()
+
+	var tool, truncated Chunk
+	json.Unmarshal([]byte(`{"choices":[{"delta":{"tool_calls":[
+		{"index":0,"id":"c1","function":{"name":"x","arguments":"{}"}}]}}]}`), &tool)
+	json.Unmarshal([]byte(`{"choices":[{"delta":{},"finish_reason":"length"}]}`), &truncated)
+
+	tr.Chunk(tool)
+	tr.Chunk(truncated)
+	tr.Finish()
+
+	eventStr := strings.Join(r.events, "\n")
+	if !strings.Contains(eventStr, `"stop_reason":"max_tokens"`) {
+		t.Error("stop_reason should be max_tokens for length truncation")
+	}
+	if strings.Contains(eventStr, `"stop_reason":"tool_use"`) {
+		t.Error("stop_reason should NOT be tool_use when truncated")
+	}
+}

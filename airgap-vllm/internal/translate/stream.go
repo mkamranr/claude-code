@@ -1,7 +1,5 @@
 package translate
 
-import "sort"
-
 // EventWriter receives named SSE events. The server implements it against an
 // http.ResponseWriter; tests implement it as a recorder.
 type EventWriter interface {
@@ -26,6 +24,7 @@ type StreamTranslator struct {
 	textIndex    int
 	nextIndex    int
 	toolBlocks   map[int]int // OpenAI tool_call index -> Anthropic block index
+	toolOpen     int         // Anthropic block index of currently open tool block, or -1
 	inputTokens  int
 	outputTokens int
 	stopReason   string
@@ -34,7 +33,7 @@ type StreamTranslator struct {
 func NewStreamTranslator(w EventWriter, messageID, model string, genID func() string) *StreamTranslator {
 	return &StreamTranslator{
 		w: w, messageID: messageID, model: model, genID: genID,
-		toolBlocks: map[int]int{},
+		toolBlocks: map[int]int{}, toolOpen: -1,
 	}
 }
 
@@ -55,9 +54,6 @@ func (t *StreamTranslator) Start() error {
 }
 
 func (t *StreamTranslator) Chunk(c Chunk) error {
-	if err := t.Start(); err != nil {
-		return err
-	}
 	if c.Usage != nil {
 		if c.Usage.PromptTokens > 0 {
 			t.inputTokens = c.Usage.PromptTokens
@@ -65,6 +61,9 @@ func (t *StreamTranslator) Chunk(c Chunk) error {
 		if c.Usage.CompletionTokens > 0 {
 			t.outputTokens = c.Usage.CompletionTokens
 		}
+	}
+	if err := t.Start(); err != nil {
+		return err
 	}
 	if len(c.Choices) == 0 {
 		return nil
@@ -94,13 +93,17 @@ func (t *StreamTranslator) Chunk(c Chunk) error {
 	for _, tc := range ch.Delta.ToolCalls {
 		idx, known := t.toolBlocks[tc.Index]
 		if !known {
-			// Anthropic blocks nest strictly; close text before opening a tool.
+			// Anthropic blocks nest strictly; close text and any open tool before opening a new tool.
 			if err := t.closeText(); err != nil {
+				return err
+			}
+			if err := t.closeTool(); err != nil {
 				return err
 			}
 			idx = t.nextIndex
 			t.nextIndex++
 			t.toolBlocks[tc.Index] = idx
+			t.toolOpen = idx
 			id := tc.ID
 			if id == "" {
 				id = t.genID()
@@ -133,6 +136,17 @@ func (t *StreamTranslator) Chunk(c Chunk) error {
 	return nil
 }
 
+func (t *StreamTranslator) closeTool() error {
+	if t.toolOpen == -1 {
+		return nil
+	}
+	idx := t.toolOpen
+	t.toolOpen = -1
+	return t.w.Event("content_block_stop", map[string]any{
+		"type": "content_block_stop", "index": idx,
+	})
+}
+
 func (t *StreamTranslator) closeText() error {
 	if !t.textOpen {
 		return nil
@@ -158,17 +172,8 @@ func (t *StreamTranslator) Finish() error {
 	if err := t.closeText(); err != nil {
 		return err
 	}
-	indices := make([]int, 0, len(t.toolBlocks))
-	for _, v := range t.toolBlocks {
-		indices = append(indices, v)
-	}
-	sort.Ints(indices)
-	for _, i := range indices {
-		if err := t.w.Event("content_block_stop", map[string]any{
-			"type": "content_block_stop", "index": i,
-		}); err != nil {
-			return err
-		}
+	if err := t.closeTool(); err != nil {
+		return err
 	}
 
 	stop := t.stopReason
@@ -178,10 +183,14 @@ func (t *StreamTranslator) Finish() error {
 	if stop == "end_turn" && len(t.toolBlocks) > 0 {
 		stop = "tool_use"
 	}
+	usage := map[string]any{"output_tokens": t.outputTokens}
+	if t.inputTokens > 0 {
+		usage["input_tokens"] = t.inputTokens
+	}
 	if err := t.w.Event("message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil},
-		"usage": map[string]any{"output_tokens": t.outputTokens},
+		"usage": usage,
 	}); err != nil {
 		return err
 	}

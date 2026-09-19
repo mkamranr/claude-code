@@ -33,7 +33,7 @@ func FromOpenAI(r OpenAIResponse, fallbackModel string, genID func() string) map
 			input := map[string]any{}
 			if tc.Function.Arguments != "" {
 				var parsed map[string]any
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err == nil {
+				if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err == nil && parsed != nil {
 					input = parsed
 				}
 			}

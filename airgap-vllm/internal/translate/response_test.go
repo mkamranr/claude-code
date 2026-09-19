@@ -93,3 +93,40 @@ func TestEmptyChoicesYieldsEmptyContent(t *testing.T) {
 		t.Errorf("stop_reason = %v", got["stop_reason"])
 	}
 }
+
+func TestNullArgumentsYieldEmptyObjectNotNull(t *testing.T) {
+	r := decodeResp(t, `{"choices":[{"message":{"tool_calls":[
+		{"id":"c","type":"function","function":{"name":"x","arguments":"null"}}]},
+		"finish_reason":"tool_calls"}]}`)
+	got := FromOpenAI(r, "m", func() string { return "gen" })
+	b := got["content"].([]any)[0].(map[string]any)
+	input, ok := b["input"].(map[string]any)
+	if !ok || input == nil {
+		t.Fatalf("input = %#v, want a non-nil empty object", b["input"])
+	}
+	// It must also serialize as {} rather than null.
+	enc, _ := json.Marshal(b["input"])
+	if string(enc) != "{}" {
+		t.Errorf("input serialized as %s, want {}", enc)
+	}
+}
+
+func TestStopReasonUpgradedWhenServerSaysStopButEmittedToolCalls(t *testing.T) {
+	r := decodeResp(t, `{"choices":[{"message":{"tool_calls":[
+		{"id":"c","type":"function","function":{"name":"x","arguments":"{}"}}]},
+		"finish_reason":"stop"}]}`)
+	got := FromOpenAI(r, "m", func() string { return "gen" })
+	if got["stop_reason"] != "tool_use" {
+		t.Errorf("stop_reason = %v, want tool_use", got["stop_reason"])
+	}
+}
+
+func TestTruncationIsNotMaskedByTheToolUseUpgrade(t *testing.T) {
+	r := decodeResp(t, `{"choices":[{"message":{"tool_calls":[
+		{"id":"c","type":"function","function":{"name":"x","arguments":"{}"}}]},
+		"finish_reason":"length"}]}`)
+	got := FromOpenAI(r, "m", func() string { return "gen" })
+	if got["stop_reason"] != "max_tokens" {
+		t.Errorf("stop_reason = %v, want max_tokens — a truncated response must not be reported as a clean tool call", got["stop_reason"])
+	}
+}

@@ -191,6 +191,24 @@ func flattenText(v any) string {
 	return ""
 }
 
+// FlattenRequestText concatenates every text fragment in a Messages request.
+// Used for token counting when the server exposes no tokenizer.
+func FlattenRequestText(req map[string]any) string {
+	var b strings.Builder
+	if sys, ok := req["system"]; ok {
+		b.WriteString(flattenText(sys))
+	}
+	msgs, _ := req["messages"].([]any)
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		b.WriteString(flattenText(m["content"]))
+	}
+	return b.String()
+}
+
 func imageDataURL(block map[string]any) string {
 	src, ok := block["source"].(map[string]any)
 	if !ok {

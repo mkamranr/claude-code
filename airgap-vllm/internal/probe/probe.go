@@ -45,7 +45,7 @@ func Detect(ctx context.Context, client *http.Client, baseURL, apiKey string) (C
 	base := strings.TrimRight(baseURL, "/")
 	var caps Capabilities
 
-	models, err := fetchModels(ctx, client, base, apiKey)
+	models, err := FetchModels(ctx, client, base, apiKey)
 	if err != nil {
 		return caps, fmt.Errorf("cannot reach vLLM at %s: %w", base, err)
 	}
@@ -76,7 +76,11 @@ func Detect(ctx context.Context, client *http.Client, baseURL, apiKey string) (C
 	return caps, nil
 }
 
-func fetchModels(ctx context.Context, client *http.Client, base, apiKey string) ([]string, error) {
+// FetchModels queries /v1/models and returns the model ids the server is
+// currently serving. It is cheap enough to call on demand — a single GET —
+// unlike Detect, which also probes /v1/messages and /tokenize.
+func FetchModels(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]string, error) {
+	base := strings.TrimRight(baseURL, "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
 	if err != nil {
 		return nil, err

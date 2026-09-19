@@ -72,6 +72,9 @@ func (t *StreamTranslator) Chunk(c Chunk) error {
 
 	if ch.Delta.Content != "" {
 		if !t.textOpen {
+			if err := t.closeTool(); err != nil {
+				return err
+			}
 			t.textIndex = t.nextIndex
 			t.nextIndex++
 			t.textOpen = true

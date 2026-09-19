@@ -259,3 +259,56 @@ func TestMaxTokensNotMaskedByToolPresence(t *testing.T) {
 		t.Error("stop_reason should NOT be tool_use when truncated")
 	}
 }
+
+// FINDING 1 (Fix Round 2): Tool block cannot remain open when text block opens.
+// Regression test for tool-then-text ordering with depth counter assertion.
+func TestToolThenTextNesting(t *testing.T) {
+	r := &recorder{}
+	tr := NewStreamTranslator(r, "msg_1", "m", func() string { return "gen" })
+	tr.Start()
+
+	var tool, text, final Chunk
+	json.Unmarshal([]byte(`{"choices":[{"delta":{"tool_calls":[
+		{"index":0,"id":"call_1","function":{"name":"read","arguments":"{}"}}]}}]}`), &tool)
+	json.Unmarshal([]byte(`{"choices":[{"delta":{"content":"Result"}}]}`), &text)
+	json.Unmarshal([]byte(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`), &final)
+
+	tr.Chunk(tool)
+	tr.Chunk(text)
+	tr.Chunk(final)
+	tr.Finish()
+
+	names := r.names()
+	// Verify strict alternation: at most one block open at a time.
+	openCount := 0
+	for i, name := range names {
+		if name == "content_block_start" {
+			openCount++
+			if openCount > 1 {
+				t.Fatalf("event %d: content_block_start while %d blocks already open; full: %v", i, openCount-1, names)
+			}
+		} else if name == "content_block_stop" {
+			openCount--
+			if openCount < 0 {
+				t.Fatalf("event %d: content_block_stop with no open block; full: %v", i, names)
+			}
+		}
+	}
+	if openCount != 0 {
+		t.Fatalf("at end, %d blocks still open; full: %v", openCount, names)
+	}
+
+	// Count: one tool and one text block should produce 2 starts and 2 stops.
+	starts := 0
+	stops := 0
+	for _, name := range names {
+		if name == "content_block_start" {
+			starts++
+		} else if name == "content_block_stop" {
+			stops++
+		}
+	}
+	if starts != 2 || stops != 2 {
+		t.Fatalf("expected 2 content_block_start and 2 content_block_stop, got %d starts and %d stops; full: %v", starts, stops, names)
+	}
+}

@@ -2,7 +2,10 @@ package probe
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"claude-vllm/internal/fakevllm"
@@ -62,5 +65,79 @@ func TestResolveMode(t *testing.T) {
 		if got := ResolveMode(c.configured, c.caps); got != c.want {
 			t.Errorf("ResolveMode(%q, %+v) = %q, want %q", c.configured, c.caps, got, c.want)
 		}
+	}
+}
+
+// TestMessagesAPITransportErrorSurfaces verifies that a transport failure
+// on /v1/messages after successful /v1/models does not silently become
+// "no Messages API available". The operator must see the error with the URL.
+func TestMessagesAPITransportErrorSurfaces(t *testing.T) {
+	// Create a server that serves /v1/models normally but panics on /v1/messages.
+	// The panic will cause a client-side connection error.
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]string{{"id": "model1"}},
+			})
+			return
+		}
+		if r.URL.Path == "/v1/messages" {
+			// Simulate transport failure by panicking (causes connection reset).
+			panic("simulated transport failure")
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer s.Close()
+
+	_, err := Detect(context.Background(), http.DefaultClient, s.URL, "")
+	if err == nil {
+		t.Fatal("Detect with transport failure on /v1/messages = nil error, want error")
+	}
+	if !strings.Contains(err.Error(), s.URL) {
+		t.Errorf("error does not contain base URL %s: %v", s.URL, err)
+	}
+	if !strings.Contains(err.Error(), "/v1/messages") {
+		t.Errorf("error does not mention /v1/messages: %v", err)
+	}
+}
+
+// TestTokenizeTransportErrorDegrades verifies that a transport failure
+// on /tokenize does not abort Detect. Instead, Tokenize becomes false
+// and the probe succeeds, allowing the bridge to estimate token counts.
+func TestTokenizeTransportErrorDegrades(t *testing.T) {
+	// Create a server that serves /v1/models and /v1/messages normally
+	// but panics on /tokenize. This should not cause Detect to fail.
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]string{{"id": "model1"}},
+			})
+			return
+		}
+		if r.URL.Path == "/v1/messages" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "bad request"})
+			return
+		}
+		if r.URL.Path == "/tokenize" {
+			// Simulate transport failure by panicking.
+			panic("simulated transport failure")
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer s.Close()
+
+	caps, err := Detect(context.Background(), http.DefaultClient, s.URL, "")
+	if err != nil {
+		t.Fatalf("Detect with transport failure on /tokenize = error, want nil: %v", err)
+	}
+	if caps.Tokenize {
+		t.Error("Tokenize = true, want false (degraded due to transport error)")
+	}
+	if len(caps.Models) == 0 {
+		t.Error("Models empty, want populated")
 	}
 }

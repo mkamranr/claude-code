@@ -50,10 +50,29 @@ func Detect(ctx context.Context, client *http.Client, baseURL, apiKey string) (C
 		return caps, fmt.Errorf("cannot reach vLLM at %s: %w", base, err)
 	}
 	caps.Models = models
-	caps.MessagesAPI = endpointExists(ctx, client, base+"/v1/messages", apiKey,
+
+	// /v1/messages probe: any error surfaces. This decides which lane runs,
+	// so a wrong answer is expensive and must never be guessed.
+	present, err := endpointExists(ctx, client, base+"/v1/messages", apiKey,
 		`{"model":"probe","max_tokens":1,"messages":[{"role":"user","content":"x"}]}`)
-	caps.Tokenize = endpointExists(ctx, client, base+"/tokenize", apiKey,
+	if err != nil {
+		return caps, fmt.Errorf("probing %s/v1/messages failed after /v1/models succeeded: %w", base, err)
+	}
+	caps.MessagesAPI = present
+
+	// /tokenize probe: degrade on transport error, except on context error.
+	// This only decides whether token counts are exact or estimated.
+	present, err = endpointExists(ctx, client, base+"/tokenize", apiKey,
 		`{"prompt":"x"}`)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return caps, fmt.Errorf("probing %s/tokenize aborted: %w", base, err)
+	case err != nil:
+		caps.Tokenize = false // optional capability; estimate instead
+	default:
+		caps.Tokenize = present
+	}
+
 	return caps, nil
 }
 
@@ -88,23 +107,25 @@ func fetchModels(ctx context.Context, client *http.Client, base, apiKey string) 
 
 // endpointExists distinguishes "this route is not implemented" from "this route
 // exists and rejected my probe payload". Only the former means absent.
-func endpointExists(ctx context.Context, client *http.Client, url, apiKey, payload string) bool {
+// Returns (bool, error): the bool is meaningful only when error is nil.
+// A non-2xx response is a successful probe with nil error.
+func endpointExists(ctx context.Context, client *http.Client, url, apiKey, payload string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(payload))
 	if err != nil {
-		return false
+		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	auth(req, apiKey)
 	resp, err := client.Do(req)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 func auth(req *http.Request, apiKey string) {

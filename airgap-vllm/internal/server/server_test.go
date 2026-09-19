@@ -31,6 +31,11 @@ func newTestServer(t *testing.T, fake *fakevllm.Server, mode string) http.Handle
 	return New(cfg, caps, lg).Handler()
 }
 
+func fakevllmStreaming(t *testing.T, chunks ...string) *fakevllm.Server {
+	t.Helper()
+	return fakevllm.New(fakevllm.Config{Models: []string{"m"}, StreamChunks: chunks})
+}
+
 func post(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))

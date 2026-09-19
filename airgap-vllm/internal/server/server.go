@@ -313,12 +313,6 @@ func (s *Server) blockingMessages(w http.ResponseWriter, r *http.Request, req ma
 	writeJSON(w, http.StatusOK, translate.FromOpenAI(parsed, s.cfg.Model, func() string { return GenID("toolu_") }))
 }
 
-// streamMessages handles streaming Messages requests. Replaced entirely in
-// Task 9; this stub exists only so the package compiles.
-func (s *Server) streamMessages(w http.ResponseWriter, r *http.Request, req map[string]any) {
-	s.fail(w, http.StatusNotImplemented, "not_implemented", "streaming lands in Task 9")
-}
-
 func (s *Server) upstream(r *http.Request, method, url string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(r.Context(), method, url, bytes.NewReader(body))
 	if err != nil {

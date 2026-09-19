@@ -25,8 +25,16 @@ type Config struct {
 	StreamChunks []string
 	// MessagesBody is the raw body returned by a native /v1/messages call.
 	MessagesBody string
-	HasTokenize  bool
-	TokenCount   int
+	// MessagesStreamChunks are raw SSE `data:` payloads returned by a native
+	// /v1/messages call when the request body carries "stream": true. Unlike
+	// StreamChunks (the OpenAI double), no [DONE] sentinel is appended: a real
+	// Anthropic stream has none, it simply ends when the connection closes
+	// after the final event. Ignored — and the endpoint behaves exactly as
+	// before — when empty, so Tasks 7, 8 and 12's use of MessagesBody for
+	// non-streaming passthrough is unaffected.
+	MessagesStreamChunks []string
+	HasTokenize          bool
+	TokenCount           int
 }
 
 type Recorded struct {
@@ -111,11 +119,31 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, s.cfg.ChatCompletion)
 }
 
-func (s *Server) handleMessages(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.MessagesAPI {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+
+	if len(s.cfg.MessagesStreamChunks) > 0 {
+		reqBody, _ := io.ReadAll(r.Body)
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		json.Unmarshal(reqBody, &req)
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			for _, c := range s.cfg.MessagesStreamChunks {
+				fmt.Fprintf(w, "data: %s\n\n", c)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	body := s.cfg.MessagesBody
 	if body == "" {

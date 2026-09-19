@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -139,6 +140,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, req ma
 	tr := translate.NewStreamTranslator(out, GenID("msg_"), s.cfg.Model,
 		func() string { return GenID("toolu_") })
 	if err := tr.Start(); err != nil {
+		// Almost always means the client already hung up, so a client-facing
+		// event would land nowhere — but the failure still needs a trace.
+		s.lg.Note("stream start failed: %v", err)
 		return
 	}
 	err = ScanSSE(resp.Body, func(_, data string) error {
@@ -150,7 +154,11 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, req ma
 		return tr.Chunk(c)
 	})
 	if err != nil {
-		s.lg.Note("stream read ended: %v", err)
+		// The client otherwise sees a stream that just ends, indistinguishable
+		// from a short but complete answer. Report the truncation before
+		// finishing so the error event lands ahead of the clean termination.
+		kind, msg := classifyStreamReadError(err)
+		s.streamFail(out, kind, msg)
 	}
 	tr.Finish()
 }
@@ -172,23 +180,35 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, req m
 		return
 	}
 
-	ScanSSE(resp.Body, func(event, data string) error {
+	err = ScanSSE(resp.Body, func(event, data string) error {
 		var decoded map[string]any
 		if json.Unmarshal([]byte(data), &decoded) != nil {
 			return out.Event(event, json.RawMessage(data))
 		}
-		if event == "content_block_start" {
+		// The effective event name falls back to the payload's own "type"
+		// field when the frame carries no `event:` line — some upstreams
+		// (and fakevllm) send bare `data:` frames. The repair check below
+		// must use this same effective name, not the raw pre-fallback
+		// `event`, or a bare-data content_block_start never gets repaired.
+		name := event
+		if name == "" {
+			name, _ = decoded["type"].(string)
+		}
+		if name == "content_block_start" {
 			if cb, ok := decoded["content_block"].(map[string]any); ok {
 				fixed := filter.EnsureToolUseIDs([]any{cb}, func() string { return GenID("toolu_") })
 				decoded["content_block"] = fixed[0]
 			}
 		}
-		name := event
-		if name == "" {
-			name, _ = decoded["type"].(string)
-		}
 		return out.Event(name, decoded)
 	})
+	if err != nil {
+		// Passthrough has no translator to close out, but the client must
+		// still learn the answer was cut short rather than seeing a stream
+		// that just quietly ends.
+		kind, msg := classifyStreamReadError(err)
+		s.streamFail(out, kind, msg)
+	}
 }
 
 // streamFail reports an error inside the stream, since headers are already sent.
@@ -198,4 +218,18 @@ func (s *Server) streamFail(out *sseWriter, kind, msg string) {
 		"type":  "error",
 		"error": map[string]any{"type": kind, "message": msg},
 	})
+}
+
+// classifyStreamReadError distinguishes an oversized SSE frame — which needs
+// a larger buffer or a fix upstream — from a dropped connection, since an
+// operator on an air-gapped machine has no way to attach a debugger and needs
+// the message alone to point at the right remedy.
+func classifyStreamReadError(err error) (kind, msg string) {
+	if errors.Is(err, bufio.ErrTooLong) {
+		return "upstream_error", fmt.Sprintf(
+			"stream response was truncated: an SSE line from vLLM exceeded the %d-byte read buffer",
+			4*1024*1024)
+	}
+	return "upstream_unavailable", fmt.Sprintf(
+		"stream response was truncated: the connection to vLLM was interrupted before the response finished: %v", err)
 }

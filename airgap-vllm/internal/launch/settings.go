@@ -75,5 +75,12 @@ func writeJSONObject(path string, doc map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o600)
+	// os.WriteFile only applies the mode argument when it creates the file; an
+	// existing file (settings.json a developer or another tool already left at
+	// a looser mode) keeps its old permissions. This file can hold secrets
+	// (an API key can end up under "env"), so the mode is enforced explicitly.
+	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }

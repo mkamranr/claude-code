@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -87,6 +89,31 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("round trip mismatch\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestSaveToEnforcesRestrictivePermissionsOnExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits; Chmod on Windows only toggles the read-only bit")
+	}
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Default()
+	c.VLLMURL = "http://10.0.0.5:8000"
+	c.Model = "m"
+	if err := c.SaveTo(p); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %o, want 0600 — a pre-existing looser mode must not survive a config holding api_key", mode)
 	}
 }
 

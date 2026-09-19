@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -89,6 +90,22 @@ func Run(cfg config.Config, args []string) (int, error) {
 	}
 
 	fmt.Fprintf(os.Stderr, "claude-vllm: %s via %s (mode: %s)\n", cfg.Model, cfg.VLLMURL, srv.Mode())
+
+	// In Claude Code, Ctrl+C interrupts the current turn — it is the normal,
+	// frequent way to stop a response that is going wrong, not a request to
+	// end the session. A console interrupt is delivered to the whole process
+	// group on both Unix and Windows, so without this the wrapper's own
+	// default terminating disposition would kill claude-vllm (and the bridge
+	// with it) on every such Ctrl+C, ending the session instead of the turn.
+	// Registering a handler replaces that default with a no-op here; the
+	// child still receives and handles its own copy of the signal normally.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt)
+	defer signal.Stop(sigs)
+	go func() {
+		for range sigs {
+		}
+	}()
 
 	cmd := exec.Command(bin, args...)
 	cmd.Env = Env(cfg, port, os.Environ())

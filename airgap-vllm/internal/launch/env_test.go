@@ -66,10 +66,14 @@ func TestEnvStripsUseGatewayFromInheritedEnvironment(t *testing.T) {
 }
 
 // These override Claude Code's own detection; guessing is worse than omitting.
+// Both the current name (_SUPPORTED_CAPABILITIES, verified against the pinned
+// 2.1.252 binary) and an older variant (_MODEL_SUPPORTS) are guarded against,
+// so the test also catches a future accidental reintroduction under either
+// spelling.
 func TestEnvOmitsCapabilityOverridesByDefault(t *testing.T) {
 	m := envMap(t, Env(testCfg(), 1, nil))
 	for k := range m {
-		if strings.Contains(k, "SUPPORTED_CAPABILITIES") {
+		if strings.Contains(k, "SUPPORTED_CAPABILITIES") || strings.Contains(k, "MODEL_SUPPORTS") {
 			t.Errorf("%s should not be set by default", k)
 		}
 	}

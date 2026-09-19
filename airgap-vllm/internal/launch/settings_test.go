@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -27,6 +28,28 @@ func TestWriteSettingsPreservesExistingKeys(t *testing.T) {
 	}
 	if env["DISABLE_UPDATES"] != "1" {
 		t.Errorf("offline switches not written: %v", env)
+	}
+}
+
+func TestWriteSettingsEnforcesRestrictivePermissionsOnExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits; Chmod on Windows only toggles the read-only bit")
+	}
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(p, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteSettings(p, testCfg()); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %o, want 0600 — a pre-existing looser mode must not survive a settings file that can hold an api key", mode)
 	}
 }
 

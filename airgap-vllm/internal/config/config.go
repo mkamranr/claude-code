@@ -151,5 +151,12 @@ func (c Config) SaveTo(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o600)
+	// os.WriteFile only applies the mode argument when it creates the file; an
+	// existing config.json left at a looser mode by an earlier version or
+	// another tool keeps that mode. This file holds api_key, so the mode is
+	// enforced explicitly rather than trusted to WriteFile.
+	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }

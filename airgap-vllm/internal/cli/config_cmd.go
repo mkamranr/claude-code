@@ -5,6 +5,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -67,7 +68,10 @@ func ApplyAssignments(c *config.Config, args []string) error {
 }
 
 // ConfigSet loads the config file, applies key=value assignments, and saves it
-// back so the operator never has to hand-edit JSON.
+// back so the operator never has to hand-edit JSON. The result must still
+// pass Validate — this is what stops e.g. `config set url=` from silently
+// blanking a working config; api_key is exempt from Validate, so clearing it
+// with `api_key=` remains a legitimate, accepted operation.
 func ConfigSet(args []string) error {
 	path, err := config.Path()
 	if err != nil {
@@ -80,6 +84,9 @@ func ConfigSet(args []string) error {
 	if err := ApplyAssignments(&c, args); err != nil {
 		return err
 	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
 	if err := c.SaveTo(path); err != nil {
 		return err
 	}
@@ -88,10 +95,16 @@ func ConfigSet(args []string) error {
 }
 
 // ConfigShow prints the effective configuration (file plus CLAUDE_VLLM_*
-// overrides). api_key is redacted: the config file can hold a real vLLM
-// credential, and this output is meant to be pasted into bug reports and chat
-// without also handing over that credential.
+// overrides) to stdout. api_key is redacted: the config file can hold a real
+// vLLM credential, and this output is meant to be pasted into bug reports and
+// chat without also handing over that credential.
 func ConfigShow() error {
+	return configShow(os.Stdout)
+}
+
+// configShow does the actual work against an injected writer so the
+// redaction behavior has a regression test that doesn't depend on os.Stdout.
+func configShow(out io.Writer) error {
 	c, err := config.Load()
 	if err != nil {
 		return err
@@ -105,9 +118,9 @@ func ConfigShow() error {
 		display.APIKey = "(not set)"
 	}
 
-	fmt.Printf("# effective configuration (%s, with CLAUDE_VLLM_* overrides applied)\n", path)
-	fmt.Println("# api_key is redacted above; the file itself is chmod 600")
-	enc := json.NewEncoder(os.Stdout)
+	fmt.Fprintf(out, "# effective configuration (%s, with CLAUDE_VLLM_* overrides applied)\n", path)
+	fmt.Fprintln(out, "# api_key is redacted above; the file itself is chmod 600")
+	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(display)
 }

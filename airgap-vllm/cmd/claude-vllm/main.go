@@ -22,6 +22,11 @@ Usage:
   claude-vllm config set k=v...  Change configuration
                                  keys: url model api_key mode max_tokens
                                        context_window supports_thinking log
+  claude-vllm -- [claude args...]
+                                 Bypass claude-vllm's own subcommands (e.g. to
+                                 pass -h/--help/setup/doctor/serve/config
+                                 through to Claude Code itself) and launch
+                                 Claude Code with everything after -- verbatim
 `
 
 func main() {
@@ -32,7 +37,14 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) > 0 {
+	// "--" is the conventional escape hatch: it skips claude-vllm's own
+	// subcommand dispatch entirely, so `-h`, `setup`, `doctor`, `serve` and
+	// `config` remain reachable as literal arguments to Claude Code itself
+	// (e.g. `claude-vllm -- --help` reaches Claude Code's own help, not
+	// claude-vllm's).
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	} else if len(args) > 0 {
 		switch args[0] {
 		case "-h", "--help", "help":
 			fmt.Print(usage)

@@ -4406,12 +4406,9 @@ Finally, in `Doctor`, after the model-availability check:
 
 ```go
 	if served, ok := caps.MaxModelLen[cfg.Model]; ok {
-		fmt.Fprintf(out, "server context   %d tokens
-", served)
+		fmt.Fprintf(out, "server context   %d tokens\n", served)
 		if cfg.ContextWindow > served {
-			fmt.Fprintf(out, "
-WARN  configured context_window (%d) exceeds what vLLM was launched with (%d).
-",
+			fmt.Fprintf(out, "\nWARN  configured context_window (%d) exceeds what vLLM was launched with (%d).\n",
 				cfg.ContextWindow, served)
 			fmt.Fprintf(out, "      Long sessions will fail mid-conversation. Fix with:\n")
 			fmt.Fprintf(out, "        claude-vllm config set context_window=%d\n", served)

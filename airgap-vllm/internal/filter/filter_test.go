@@ -112,3 +112,43 @@ func TestEnsureToolUseIDsFillsMissingID(t *testing.T) {
 		t.Errorf("generator called %d times, want 1", n)
 	}
 }
+
+func TestKeepsAPropertyLiterallyNamedPattern(t *testing.T) {
+	in := decode(t, `{"tools":[{"name":"Grep","input_schema":{
+		"type":"object",
+		"properties":{
+			"pattern":{"type":"string","description":"regex to search for","pattern":"^.+$"},
+			"path":{"type":"string"}
+		},
+		"required":["pattern"]}}]}`)
+	out, _ := Request(in)
+	got := encode(t, out)
+
+	if !strings.Contains(got, `"pattern":{`) {
+		t.Errorf("property named pattern was deleted: %s", got)
+	}
+	if !strings.Contains(got, `"regex to search for"`) {
+		t.Errorf("property description lost: %s", got)
+	}
+	if strings.Contains(got, `"^.+$"`) {
+		t.Errorf("pattern keyword inside the property schema survived: %s", got)
+	}
+	if !strings.Contains(got, `"required":["pattern"]`) {
+		t.Errorf("required list should be untouched: %s", got)
+	}
+}
+
+func TestAllowsKnownToolBlockTypes(t *testing.T) {
+	in := decode(t, `{"messages":[{"role":"user","content":[
+		{"type":"mcp_tool_use","name":"x","input":{}},
+		{"type":"advisor_20260301","payload":"x"}
+	]}]}`)
+	out, _ := Request(in)
+	got := encode(t, out)
+	if !strings.Contains(got, "mcp_tool_use") {
+		t.Errorf("mcp_tool_use block was dropped: %s", got)
+	}
+	if strings.Contains(got, "advisor_20260301") {
+		t.Errorf("unknown block advisor_20260301 survived: %s", got)
+	}
+}

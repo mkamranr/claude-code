@@ -10,13 +10,19 @@ import "fmt"
 // allowedBlockTypes is a whitelist. Anything else is dropped, because a single
 // unrecognized content block type fails the entire request on strict servers.
 var allowedBlockTypes = map[string]bool{
-	"text":              true,
-	"image":             true,
-	"tool_use":          true,
-	"tool_result":       true,
-	"thinking":          true,
-	"redacted_thinking": true,
-	"document":          true,
+	"text":                       true,
+	"image":                      true,
+	"tool_use":                   true,
+	"tool_result":                true,
+	"thinking":                   true,
+	"redacted_thinking":          true,
+	"document":                   true,
+	"server_tool_use":            true,
+	"web_search_tool_result":     true,
+	"web_fetch_tool_result":      true,
+	"mcp_tool_use":               true,
+	"mcp_tool_result":            true,
+	"code_execution_tool_result": true,
 }
 
 // schemaKeywordsToStrip are JSON Schema keywords that strict validators on the
@@ -100,25 +106,49 @@ func filterContent(content any, notes *[]string, where string) any {
 // StripSchemaKeywords recursively removes validator-hostile keywords from a
 // JSON Schema while leaving its structure intact.
 func StripSchemaKeywords(schema any) any {
-	switch s := schema.(type) {
+	return stripSchemaNode(schema)
+}
+
+// stripSchemaNode walks a schema node, stripping keyword keys but preserving
+// property names within properties/definitions/patternProperties objects.
+func stripSchemaNode(v any) any {
+	switch s := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(s))
-		for k, v := range s {
+		for k, val := range s {
 			if isStrippedKeyword(k) {
 				continue
 			}
-			out[k] = StripSchemaKeywords(v)
+			switch k {
+			case "properties", "$defs", "definitions", "patternProperties":
+				out[k] = stripSchemaDict(val)
+			default:
+				out[k] = stripSchemaNode(val)
+			}
 		}
 		return out
 	case []any:
 		out := make([]any, len(s))
-		for i, v := range s {
-			out[i] = StripSchemaKeywords(v)
+		for i, e := range s {
+			out[i] = stripSchemaNode(e)
 		}
 		return out
 	default:
-		return schema
+		return v
 	}
+}
+
+// stripSchemaDict walks a map whose keys are property names, not keywords.
+func stripSchemaDict(v any) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return stripSchemaNode(v)
+	}
+	out := make(map[string]any, len(m))
+	for name, sub := range m {
+		out[name] = stripSchemaNode(sub)
+	}
+	return out
 }
 
 func isStrippedKeyword(k string) bool {

@@ -100,7 +100,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // offered is not silently rejected a moment later. It never touches
 // MessagesAPI, Tokenize, or mode; see the Server doc comment.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	models, err := probe.FetchModels(r.Context(), s.client, s.base(), s.cfg.APIKey)
+	models, _, err := probe.FetchModels(r.Context(), s.client, s.base(), s.cfg.APIKey)
 	if err != nil {
 		s.fail(w, http.StatusBadGateway, "upstream_unavailable", err.Error())
 		return
@@ -208,7 +208,7 @@ func (s *Server) pinModel(r *http.Request, cleaned map[string]any) bool {
 	// Not in the cached list. The cache may simply be stale — handleModels
 	// refreshes independently of this request path — so refresh once before
 	// deciding anything.
-	refreshed, err := probe.FetchModels(r.Context(), s.client, s.base(), s.cfg.APIKey)
+	refreshed, _, err := probe.FetchModels(r.Context(), s.client, s.base(), s.cfg.APIKey)
 	if err == nil {
 		s.setModels(refreshed)
 		if s.hasModel(requested) {

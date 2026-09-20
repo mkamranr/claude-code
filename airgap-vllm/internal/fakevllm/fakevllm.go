@@ -35,6 +35,9 @@ type Config struct {
 	MessagesStreamChunks []string
 	HasTokenize          bool
 	TokenCount           int
+	// MaxModelLen, when positive, is emitted as max_model_len for every model
+	// on /v1/models, mimicking vLLM's context-length report.
+	MaxModelLen int
 }
 
 type Recorded struct {
@@ -87,7 +90,11 @@ func (s *Server) record(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	data := make([]map[string]any, 0, len(s.cfg.Models))
 	for _, m := range s.cfg.Models {
-		data = append(data, map[string]any{"id": m, "object": "model"})
+		entry := map[string]any{"id": m, "object": "model"}
+		if s.cfg.MaxModelLen > 0 {
+			entry["max_model_len"] = s.cfg.MaxModelLen
+		}
+		data = append(data, entry)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})

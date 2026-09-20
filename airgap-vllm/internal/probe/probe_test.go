@@ -50,6 +50,19 @@ func TestDetectErrorsWhenUnreachable(t *testing.T) {
 	}
 }
 
+func TestDetectCapturesMaxModelLenWhenReported(t *testing.T) {
+	s := fakevllm.New(fakevllm.Config{Models: []string{"m"}, MaxModelLen: 131072})
+	defer s.Close()
+
+	caps, err := Detect(context.Background(), http.DefaultClient, s.URL(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps.MaxModelLen["m"] != 131072 {
+		t.Errorf("MaxModelLen = %v, want 131072", caps.MaxModelLen)
+	}
+}
+
 func TestResolveMode(t *testing.T) {
 	cases := []struct {
 		configured string

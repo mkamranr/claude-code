@@ -15,6 +15,8 @@ type Capabilities struct {
 	MessagesAPI bool
 	Tokenize    bool
 	Models      []string
+	// MaxModelLen is the context length vLLM reports per model, when it does.
+	MaxModelLen map[string]int
 }
 
 func (c Capabilities) HasModel(id string) bool {
@@ -45,11 +47,12 @@ func Detect(ctx context.Context, client *http.Client, baseURL, apiKey string) (C
 	base := strings.TrimRight(baseURL, "/")
 	var caps Capabilities
 
-	models, err := FetchModels(ctx, client, base, apiKey)
+	models, lens, err := FetchModels(ctx, client, base, apiKey)
 	if err != nil {
 		return caps, fmt.Errorf("cannot reach vLLM at %s: %w", base, err)
 	}
 	caps.Models = models
+	caps.MaxModelLen = lens
 
 	// /v1/messages probe: any error surfaces. This decides which lane runs,
 	// so a wrong answer is expensive and must never be guessed.
@@ -77,36 +80,42 @@ func Detect(ctx context.Context, client *http.Client, baseURL, apiKey string) (C
 }
 
 // FetchModels queries /v1/models and returns the model ids the server is
-// currently serving. It is cheap enough to call on demand — a single GET —
-// unlike Detect, which also probes /v1/messages and /tokenize.
-func FetchModels(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]string, error) {
+// currently serving, plus the context length (max_model_len) vLLM reports for
+// each model that includes it. It is cheap enough to call on demand — a
+// single GET — unlike Detect, which also probes /v1/messages and /tokenize.
+func FetchModels(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]string, map[string]int, error) {
 	base := strings.TrimRight(baseURL, "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	auth(req, apiKey)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("/v1/models returned HTTP %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("/v1/models returned HTTP %d", resp.StatusCode)
 	}
 	var body struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID          string `json:"id"`
+			MaxModelLen int    `json:"max_model_len"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("parsing /v1/models: %w", err)
+		return nil, nil, fmt.Errorf("parsing /v1/models: %w", err)
 	}
-	out := make([]string, 0, len(body.Data))
+	ids := make([]string, 0, len(body.Data))
+	lens := map[string]int{}
 	for _, m := range body.Data {
-		out = append(out, m.ID)
+		ids = append(ids, m.ID)
+		if m.MaxModelLen > 0 {
+			lens[m.ID] = m.MaxModelLen
+		}
 	}
-	return out, nil
+	return ids, lens, nil
 }
 
 // endpointExists distinguishes "this route is not implemented" from "this route

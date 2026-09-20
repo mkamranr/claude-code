@@ -30,6 +30,12 @@ func TestApplyAssignmentsRejectsUnknownKey(t *testing.T) {
 	if err := ApplyAssignments(&c, []string{"colour=blue"}); err == nil {
 		t.Fatal("unknown key accepted, want error naming valid keys")
 	}
+	// supports_thinking was removed: it was settable, storable and documented
+	// but read by nothing, so it promised a behaviour the bridge never had.
+	// Accepting it again would restore that promise.
+	if err := ApplyAssignments(&c, []string{"supports_thinking=true"}); err == nil {
+		t.Fatal("supports_thinking accepted; it drives nothing and must not be settable")
+	}
 }
 
 func TestApplyAssignmentsRejectsMalformedPair(t *testing.T) {

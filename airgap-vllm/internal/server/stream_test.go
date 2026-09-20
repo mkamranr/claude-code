@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"strings"
+	"sync"
 	"testing"
 
 	"claude-vllm/internal/config"
@@ -222,4 +224,166 @@ func TestPassthroughMidStreamFailureEmitsErrorEvent(t *testing.T) {
 	if !strings.Contains(body, "event: content_block_delta") {
 		t.Errorf("the event received before the drop is missing:\n%s", body)
 	}
+}
+
+// TestStreamTranslatedAsksUpstreamForUsage pins FIX 1's outgoing contract.
+// vLLM's OpenAI server attaches usage to streamed chunks only when the request
+// carries stream_options.include_usage, so without this line on the wire the
+// translator reports zero tokens for an entire session and Claude Code's
+// context meter stays blank until the conversation dies of a context error.
+func TestStreamTranslatedAsksUpstreamForUsage(t *testing.T) {
+	fake := fakevllmStreaming(t,
+		`{"choices":[{"delta":{"content":"hi"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`,
+	)
+	defer fake.Close()
+	h := newTestServer(t, fake, "openai")
+
+	rr := post(t, h, "/v1/messages", `{"model":"m","stream":true,
+		"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	reqs := fake.Requests()
+	var chat string
+	for _, r := range reqs {
+		if r.Path == "/v1/chat/completions" {
+			chat = r.Body
+		}
+	}
+	if chat == "" {
+		t.Fatalf("no /v1/chat/completions request recorded: %+v", reqs)
+	}
+	if !strings.Contains(chat, `"include_usage":true`) {
+		t.Errorf("upstream stream request did not ask for usage:\n%s", chat)
+	}
+
+	// End to end: because fakevllm now withholds usage from a request that
+	// did not ask for it, the token counts reaching the client are proof the
+	// request asked.
+	body := rr.Body.String()
+	if !strings.Contains(body, `"input_tokens":3`) {
+		t.Errorf("input_tokens never reached the client:\n%s", body)
+	}
+	if !strings.Contains(body, `"output_tokens":2`) {
+		t.Errorf("output_tokens never reached the client:\n%s", body)
+	}
+}
+
+// TestStreamCancelledByClientIsNotReportedAsAVLLMFailure covers FIX 2.
+// Pressing Esc in Claude Code aborts the request, cancelling the handler's
+// context and breaking the upstream read — the single most common user action
+// in a session. Calling that a dropped vLLM connection sends an operator with
+// no internet to debug a network that is working.
+func TestStreamCancelledByClientIsNotReportedAsAVLLMFailure(t *testing.T) {
+	streaming := make(chan struct{})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": "m"}}})
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			close(streaming)
+			// Hold the stream open with no terminator, so the only thing that
+			// can end the read is the client going away.
+			<-release
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	// LIFO: release the upstream handler first, then shut the server down.
+	defer upstream.Close()
+	defer close(release)
+
+	cfg := config.Default()
+	cfg.VLLMURL = upstream.URL
+	cfg.Model = "m"
+	cfg.Mode = "openai"
+	caps, err := probe.Detect(context.Background(), http.DefaultClient, upstream.URL, "")
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	lg, err := NewLogger("off", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg, caps, lg).Handler()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"m","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+	)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rr := newSignalRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rr, req)
+		close(done)
+	}()
+	<-streaming
+	// Wait for the first byte to reach the client before cancelling, so the
+	// failure under test is a read error mid-stream rather than a cancelled
+	// dial — the handler is then certainly inside ScanSSE.
+	<-rr.wrote
+	cancel() // what pressing Esc does
+	<-done
+
+	body := rr.String()
+	if !strings.Contains(body, "event: message_start") {
+		t.Fatalf("stream never started, so the cancellation path was not exercised:\n%s", body)
+	}
+	if strings.Contains(body, "event: error") {
+		t.Errorf("a client cancellation was reported as a stream error:\n%s", body)
+	}
+	if strings.Contains(body, "connection to vLLM was interrupted") {
+		t.Errorf("a client cancellation was blamed on vLLM:\n%s", body)
+	}
+}
+
+// signalRecorder is an httptest.ResponseRecorder that can be read safely while
+// a handler is still writing, and that announces its first write. The
+// cancellation test needs both: it must cancel at a precise point in the
+// handler's life, then inspect what was written.
+type signalRecorder struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	hdr   http.Header
+	code  int
+	once  sync.Once
+	wrote chan struct{}
+}
+
+func newSignalRecorder() *signalRecorder {
+	return &signalRecorder{hdr: http.Header{}, code: http.StatusOK, wrote: make(chan struct{})}
+}
+
+func (s *signalRecorder) Header() http.Header { return s.hdr }
+
+func (s *signalRecorder) WriteHeader(code int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.code = code
+}
+
+func (s *signalRecorder) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	n, err := s.buf.Write(p)
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.wrote) })
+	return n, err
+}
+
+// Flush exists so newSSEWriter treats this as a flushable stream, matching how
+// a real connection behaves.
+func (s *signalRecorder) Flush() {}
+
+func (s *signalRecorder) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
 }

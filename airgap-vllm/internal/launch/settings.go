@@ -12,6 +12,11 @@ import (
 
 // WriteSettings merges the offline switches into Claude Code's settings.json
 // without disturbing anything the developer already configured.
+//
+// cfg is deliberately unused. The one per-run value the launcher holds is the
+// ephemeral loopback port, and settings.json outlives the run: persisting it
+// would point the next session at a port nothing is listening on. Everything
+// derived from cfg belongs in the child environment (see Env), not on disk.
 func WriteSettings(path string, cfg config.Config) error {
 	doc, err := readJSONObject(path)
 	if err != nil {
@@ -23,7 +28,7 @@ func WriteSettings(path string, cfg config.Config) error {
 	}
 	for _, k := range []string{
 		"DISABLE_UPDATES", "DISABLE_AUTOUPDATER", "DISABLE_TELEMETRY",
-		"DISABLE_ERROR_REPORTING", "DISABLE_BUG_COMMAND",
+		"DISABLE_ERROR_REPORTING", "DISABLE_BUG_COMMAND", "DISABLE_COST_WARNINGS",
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 	} {
 		env[k] = "1"

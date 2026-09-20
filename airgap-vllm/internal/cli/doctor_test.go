@@ -3,9 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -286,5 +290,138 @@ func TestDoctorWarnsWhenContextWindowExceedsServerMaxModelLen(t *testing.T) {
 	}
 	if !strings.Contains(got, "131072") || !strings.Contains(got, "32768") {
 		t.Errorf("output does not name both the configured and server context window:\n%s", got)
+	}
+}
+
+// TestDoctorPrintsParserHintForToolShapedFailure and its counterpart below
+// cover FIX 4's second half. The hint tells an operator to restart vLLM with a
+// different --tool-call-parser; printing it for every smoke-test failure sends
+// someone to rebuild a server whose parser was never the problem.
+func TestDoctorPrintsParserHintForToolShapedFailure(t *testing.T) {
+	fake := fakevllm.New(fakevllm.Config{
+		Models: []string{"m"},
+		ChatCompletion: `{"id":"c1","choices":[{"message":{"content":
+			"Sure! I would call ping with value ok."},"finish_reason":"stop"}]}`,
+	})
+	defer fake.Close()
+	setHome(t)
+
+	c := config.Default()
+	c.VLLMURL = fake.URL()
+	c.Model = "m"
+	saveConfig(t, c)
+
+	var out bytes.Buffer
+	if err := Doctor(&out); !errors.Is(err, ErrReported) {
+		t.Fatalf("Doctor error = %v, want ErrReported", err)
+	}
+	if !strings.Contains(out.String(), "--tool-call-parser") {
+		t.Errorf("prose instead of a tool call should print the parser hint:\n%s", out.String())
+	}
+}
+
+func TestDoctorOmitsParserHintForTransportFailure(t *testing.T) {
+	// /v1/models answers so probing succeeds and the smoke test is reached;
+	// the completion itself then fails at the HTTP level, which says nothing
+	// whatsoever about how the model formats tool calls.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": "m"}}})
+		case "/v1/chat/completions":
+			http.Error(w, "engine core has died", http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+	setHome(t)
+
+	c := config.Default()
+	c.VLLMURL = upstream.URL
+	c.Model = "m"
+	saveConfig(t, c)
+
+	var out bytes.Buffer
+	if err := Doctor(&out); !errors.Is(err, ErrReported) {
+		t.Fatalf("Doctor error = %v, want ErrReported", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "--tool-call-parser") {
+		t.Errorf("an HTTP 500 from vLLM must not be blamed on the tool-call parser:\n%s", got)
+	}
+	if !strings.Contains(got, "500") {
+		t.Errorf("output does not report what actually happened:\n%s", got)
+	}
+}
+
+// TestDoctorSurfacesMalformedEnvOverride covers FIX 6: a CLAUDE_VLLM_* value
+// that could not be parsed is dropped and the prior value kept, so the number
+// Doctor prints is not the one the operator set. Saying so is the whole point
+// of the command.
+func TestDoctorSurfacesMalformedEnvOverride(t *testing.T) {
+	fake := fakevllm.New(fakevllm.Config{
+		Models:         []string{"m"},
+		ChatCompletion: wellFormedToolCall,
+	})
+	defer fake.Close()
+	setHome(t)
+
+	c := config.Default()
+	c.VLLMURL = fake.URL()
+	c.Model = "m"
+	saveConfig(t, c)
+	t.Setenv("CLAUDE_VLLM_CONTEXT_WINDOW", "131o72")
+
+	var out bytes.Buffer
+	if err := Doctor(&out); err != nil {
+		t.Fatalf("a malformed override must not be fatal, got %v\n%s", err, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "WARN") || !strings.Contains(got, "CLAUDE_VLLM_CONTEXT_WINDOW") {
+		t.Errorf("Doctor silently dropped a malformed override:\n%s", got)
+	}
+}
+
+// TestDoctorHonoursConfiguredLogLevel covers FIX 10. README sends an operator
+// debugging tool calling to set log=full and read the logged bodies; Doctor is
+// the command that reproduces the problem, and it used to write nothing.
+func TestDoctorHonoursConfiguredLogLevel(t *testing.T) {
+	fake := fakevllm.New(fakevllm.Config{
+		Models:         []string{"m"},
+		ChatCompletion: wellFormedToolCall,
+	})
+	defer fake.Close()
+	setHome(t)
+
+	c := config.Default()
+	c.VLLMURL = fake.URL()
+	c.Model = "m"
+	c.Log = "full"
+	saveConfig(t, c)
+
+	var out bytes.Buffer
+	if err := Doctor(&out); err != nil {
+		t.Fatalf("Doctor = %v, want nil\n%s", err, out.String())
+	}
+
+	path, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(filepath.Dir(path), "log"))
+	if err != nil {
+		t.Fatalf("log=full wrote no log directory: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("log=full produced no log file for the smoke test")
+	}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(path), "log", entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "bridge->vllm") {
+		t.Errorf("smoke-test request body was not logged under log=full:\n%s", b)
 	}
 }

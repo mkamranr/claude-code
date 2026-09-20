@@ -23,6 +23,21 @@ var strippedExact = map[string]bool{
 	"CLAUDE_CODE_USE_VERTEX":  true,
 }
 
+// strippedByPattern matches inherited variables by shape rather than by exact
+// name, because the tier is part of the name:
+// ANTHROPIC_DEFAULT_<TIER>_MODEL_SUPPORTED_CAPABILITIES (and the older
+// _MODEL_SUPPORTS spelling) override Claude Code's own capability detection
+// for whichever tier they name. An inherited value is a guess made somewhere
+// else about a different model, and it silently wins over detection — the
+// exact failure the design set out to avoid by never setting these itself.
+func strippedByPattern(name string) bool {
+	if !strings.HasPrefix(name, "ANTHROPIC_DEFAULT_") {
+		return false
+	}
+	return strings.HasSuffix(name, "_MODEL_SUPPORTED_CAPABILITIES") ||
+		strings.HasSuffix(name, "_MODEL_SUPPORTS")
+}
+
 // Env builds the environment for the child claude process. base is the
 // inherited environment; pass nil in tests, os.Environ() in production.
 func Env(cfg config.Config, port int, base []string) []string {
@@ -40,7 +55,7 @@ func Env(cfg config.Config, port int, base []string) []string {
 		if len(parts) != 2 {
 			continue
 		}
-		if strippedExact[parts[0]] {
+		if strippedExact[parts[0]] || strippedByPattern(parts[0]) {
 			continue
 		}
 		put(parts[0], parts[1])
@@ -59,9 +74,10 @@ func Env(cfg config.Config, port int, base []string) []string {
 		put("ANTHROPIC_DEFAULT_"+tier+"_MODEL_NAME", label)
 		put("ANTHROPIC_DEFAULT_"+tier+"_MODEL_DESCRIPTION", "Self-hosted vLLM")
 	}
-	// ANTHROPIC_DEFAULT_*_MODEL_SUPPORTED_CAPABILITIES is deliberately not set.
-	// It overrides Claude Code's own capability detection; guessing its accepted
-	// token set is worse than letting detection run.
+	// ANTHROPIC_DEFAULT_*_MODEL_SUPPORTED_CAPABILITIES is deliberately not set,
+	// and is stripped from the inherited environment above. It overrides Claude
+	// Code's own capability detection; guessing its accepted token set is worse
+	// than letting detection run.
 
 	// The bridge serves /v1/models, so the /model picker can list what vLLM
 	// actually serves. Exempt from the nonessential-traffic block below.

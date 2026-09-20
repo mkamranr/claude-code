@@ -120,6 +120,12 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, req ma
 		return
 	}
 	oa["stream"] = true
+	// vLLM's OpenAI server attaches a usage block to streamed chunks only when
+	// the request asks for one. Without this the translator never learns a
+	// token count, message_start reports input_tokens: 0 for the whole session,
+	// and Claude Code's context meter stays empty right up until the
+	// conversation dies of a hard context-length error.
+	oa["stream_options"] = map[string]any{"include_usage": true}
 	body, _ := json.Marshal(oa)
 	s.lg.Body("bridge->vllm(stream)", body)
 
@@ -157,8 +163,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, req ma
 		// The client otherwise sees a stream that just ends, indistinguishable
 		// from a short but complete answer. Report the truncation before
 		// finishing so the error event lands ahead of the clean termination.
-		kind, msg := classifyStreamReadError(err)
-		s.streamFail(out, kind, msg)
+		s.reportStreamReadError(r, out, err)
 	}
 	tr.Finish()
 }
@@ -206,8 +211,7 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, req m
 		// Passthrough has no translator to close out, but the client must
 		// still learn the answer was cut short rather than seeing a stream
 		// that just quietly ends.
-		kind, msg := classifyStreamReadError(err)
-		s.streamFail(out, kind, msg)
+		s.reportStreamReadError(r, out, err)
 	}
 }
 
@@ -218,6 +222,25 @@ func (s *Server) streamFail(out *sseWriter, kind, msg string) {
 		"type":  "error",
 		"error": map[string]any{"type": kind, "message": msg},
 	})
+}
+
+// reportStreamReadError decides what, if anything, the client is told about a
+// stream that stopped early.
+//
+// Pressing Esc in Claude Code aborts the in-flight request. That cancels
+// r.Context(), which both kills the upstream request and breaks the writer the
+// callbacks write into, so the single most common thing an operator does
+// arrives here looking exactly like a dropped network connection. Reporting it
+// as one sends someone with no internet to debug a network that is fine, and
+// there is nobody left listening for an SSE error event anyway — the client
+// that would have read it is the client that just hung up.
+func (s *Server) reportStreamReadError(r *http.Request, out *sseWriter, err error) {
+	if r.Context().Err() != nil {
+		s.lg.Note("stream ended early: the client cancelled the request (%v)", r.Context().Err())
+		return
+	}
+	kind, msg := classifyStreamReadError(err)
+	s.streamFail(out, kind, msg)
 }
 
 // classifyStreamReadError distinguishes an oversized SSE frame — which needs

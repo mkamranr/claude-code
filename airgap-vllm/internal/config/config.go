@@ -13,14 +13,13 @@ import (
 )
 
 type Config struct {
-	VLLMURL          string `json:"vllm_url"`
-	Model            string `json:"model"`
-	APIKey           string `json:"api_key"`
-	Mode             string `json:"mode"`
-	MaxTokens        int    `json:"max_tokens"`
-	ContextWindow    int    `json:"context_window"`
-	SupportsThinking bool   `json:"supports_thinking"`
-	Log              string `json:"log"`
+	VLLMURL       string `json:"vllm_url"`
+	Model         string `json:"model"`
+	APIKey        string `json:"api_key"`
+	Mode          string `json:"mode"`
+	MaxTokens     int    `json:"max_tokens"`
+	ContextWindow int    `json:"context_window"`
+	Log           string `json:"log"`
 }
 
 func Default() Config {
@@ -49,18 +48,21 @@ func Path() (string, error) {
 	return filepath.Join(d, "config.json"), nil
 }
 
-// Load reads the default config path and applies environment overrides.
-func Load() (Config, error) {
+// Load reads the default config path and applies environment overrides. The
+// returned warnings describe CLAUDE_VLLM_* values that could not be used; they
+// are not fatal, but every caller must put them somewhere an operator reads —
+// a silently ignored override is the kind of thing that costs an afternoon on
+// a machine with no internet to search from.
+func Load() (Config, []string, error) {
 	p, err := Path()
 	if err != nil {
-		return Config{}, err
+		return Config{}, nil, err
 	}
 	c, err := LoadFrom(p)
 	if err != nil {
-		return Config{}, err
+		return Config{}, nil, err
 	}
-	ApplyEnv(&c, os.LookupEnv)
-	return c, nil
+	return c, ApplyEnv(&c, os.LookupEnv), nil
 }
 
 // LoadFrom reads one file. A missing file is not an error; it yields defaults
@@ -82,25 +84,34 @@ func LoadFrom(path string) (Config, error) {
 
 // ApplyEnv overlays CLAUDE_VLLM_* variables. lookup is injected so tests need
 // no process environment.
-func ApplyEnv(c *Config, lookup func(string) (string, bool)) {
+//
+// A malformed value is never fatal — refusing to start because of a typo in a
+// variable the operator may not even have meant to set would be worse than
+// carrying on — but it is never silent either. It is returned as a warning and
+// the prior value is kept, so `CLAUDE_VLLM_CONTEXT_WINDOW=131o72` says so
+// instead of leaving someone to debug a context window they think they changed.
+func ApplyEnv(c *Config, lookup func(string) (string, bool)) []string {
+	var warnings []string
+	warn := func(key, value, kind string, keeping any) {
+		warnings = append(warnings, fmt.Sprintf(
+			"%s=%q is not %s; ignoring it and keeping %v", key, value, kind, keeping))
+	}
 	str := func(key string, dst *string) {
 		if v, ok := lookup(key); ok && v != "" {
 			*dst = v
 		}
 	}
 	num := func(key string, dst *int) {
-		if v, ok := lookup(key); ok && v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				*dst = n
-			}
+		v, ok := lookup(key)
+		if !ok || v == "" {
+			return
 		}
-	}
-	boolean := func(key string, dst *bool) {
-		if v, ok := lookup(key); ok && v != "" {
-			if b, err := strconv.ParseBool(v); err == nil {
-				*dst = b
-			}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			warn(key, v, "a whole number", *dst)
+			return
 		}
+		*dst = n
 	}
 	str("CLAUDE_VLLM_URL", &c.VLLMURL)
 	str("CLAUDE_VLLM_MODEL", &c.Model)
@@ -109,7 +120,7 @@ func ApplyEnv(c *Config, lookup func(string) (string, bool)) {
 	str("CLAUDE_VLLM_LOG", &c.Log)
 	num("CLAUDE_VLLM_MAX_TOKENS", &c.MaxTokens)
 	num("CLAUDE_VLLM_CONTEXT_WINDOW", &c.ContextWindow)
-	boolean("CLAUDE_VLLM_SUPPORTS_THINKING", &c.SupportsThinking)
+	return warnings
 }
 
 var (

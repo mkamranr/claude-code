@@ -26,8 +26,18 @@ func TestWriteSettingsPreservesExistingKeys(t *testing.T) {
 	if env["MY_VAR"] != "keep" {
 		t.Error("existing env entries were lost")
 	}
-	if env["DISABLE_UPDATES"] != "1" {
-		t.Errorf("offline switches not written: %v", env)
+	// All seven offline switches the design lists must be written, not six:
+	// settings.json is what governs a Claude Code process the launcher did not
+	// start, so a switch that lives only in Env is a switch that is sometimes
+	// simply absent.
+	for _, k := range []string{
+		"DISABLE_UPDATES", "DISABLE_AUTOUPDATER", "DISABLE_TELEMETRY",
+		"DISABLE_ERROR_REPORTING", "DISABLE_BUG_COMMAND", "DISABLE_COST_WARNINGS",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+	} {
+		if env[k] != "1" {
+			t.Errorf("offline switch %s not written: %v", k, env)
+		}
 	}
 }
 

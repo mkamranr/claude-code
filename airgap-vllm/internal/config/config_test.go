@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -54,12 +55,14 @@ func TestApplyEnvOverridesFileValues(t *testing.T) {
 	c.VLLMURL = "http://from-file:8000"
 	c.Model = "file-model"
 	env := map[string]string{
-		"CLAUDE_VLLM_URL":               "http://from-env:9000",
-		"CLAUDE_VLLM_MODEL":             "env-model",
-		"CLAUDE_VLLM_MAX_TOKENS":        "4096",
-		"CLAUDE_VLLM_SUPPORTS_THINKING": "true",
+		"CLAUDE_VLLM_URL":        "http://from-env:9000",
+		"CLAUDE_VLLM_MODEL":      "env-model",
+		"CLAUDE_VLLM_MAX_TOKENS": "4096",
 	}
-	ApplyEnv(&c, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	warnings := ApplyEnv(&c, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	if len(warnings) != 0 {
+		t.Errorf("well-formed overrides produced warnings: %v", warnings)
+	}
 
 	if c.VLLMURL != "http://from-env:9000" {
 		t.Errorf("VLLMURL = %q, want env value", c.VLLMURL)
@@ -70,8 +73,33 @@ func TestApplyEnvOverridesFileValues(t *testing.T) {
 	if c.MaxTokens != 4096 {
 		t.Errorf("MaxTokens = %d, want 4096", c.MaxTokens)
 	}
-	if !c.SupportsThinking {
-		t.Error("SupportsThinking = false, want true")
+}
+
+// A typo in a numeric override must not vanish. Keeping the prior value is
+// right; keeping it silently is what leaves an operator debugging a context
+// window they are certain they changed.
+func TestApplyEnvWarnsAboutMalformedNumbersAndKeepsPriorValue(t *testing.T) {
+	c := Default()
+	env := map[string]string{
+		"CLAUDE_VLLM_CONTEXT_WINDOW": "131o72",
+		"CLAUDE_VLLM_MAX_TOKENS":     "lots",
+	}
+	warnings := ApplyEnv(&c, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+
+	if c.ContextWindow != Default().ContextWindow {
+		t.Errorf("ContextWindow = %d, want the prior value %d", c.ContextWindow, Default().ContextWindow)
+	}
+	if c.MaxTokens != Default().MaxTokens {
+		t.Errorf("MaxTokens = %d, want the prior value %d", c.MaxTokens, Default().MaxTokens)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %v, want one per malformed value", warnings)
+	}
+	joined := strings.Join(warnings, "\n")
+	for _, want := range []string{"CLAUDE_VLLM_CONTEXT_WINDOW", "131o72", "CLAUDE_VLLM_MAX_TOKENS", "lots"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings do not name %q:\n%s", want, joined)
+		}
 	}
 }
 

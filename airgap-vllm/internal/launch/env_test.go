@@ -65,17 +65,37 @@ func TestEnvStripsUseGatewayFromInheritedEnvironment(t *testing.T) {
 	}
 }
 
-// These override Claude Code's own detection; guessing is worse than omitting.
+// Capability overrides must neither be set by the launcher nor inherited: they
+// override Claude Code's own detection for the tier they name, and a value
+// left in the environment is a guess made elsewhere about a different model.
 // Both the current name (_SUPPORTED_CAPABILITIES, verified against the pinned
 // 2.1.252 binary) and an older variant (_MODEL_SUPPORTS) are guarded against,
 // so the test also catches a future accidental reintroduction under either
 // spelling.
-func TestEnvOmitsCapabilityOverridesByDefault(t *testing.T) {
-	m := envMap(t, Env(testCfg(), 1, nil))
+//
+// base carries them so this proves stripping, not merely that Env declines to
+// set them; PATH is along to prove the pattern match is not eating everything.
+func TestEnvStripsCapabilityOverrides(t *testing.T) {
+	base := []string{
+		"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES=thinking",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES=thinking",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTS=thinking",
+		"PATH=/usr/bin",
+	}
+	m := envMap(t, Env(testCfg(), 1, base))
 	for k := range m {
 		if strings.Contains(k, "SUPPORTED_CAPABILITIES") || strings.Contains(k, "MODEL_SUPPORTS") {
-			t.Errorf("%s should not be set by default", k)
+			t.Errorf("%s reached the child; it overrides Claude Code's own detection", k)
 		}
+	}
+	if m["PATH"] != "/usr/bin" {
+		t.Error("unrelated inherited variables must survive the pattern strip")
+	}
+	// The tier names themselves must still be set, or background Haiku-tier
+	// calls 404 — the strip must not have taken the ANTHROPIC_DEFAULT_* family
+	// with it.
+	if m["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "" {
+		t.Error("ANTHROPIC_DEFAULT_HAIKU_MODEL was stripped along with the capability overrides")
 	}
 }
 
@@ -83,7 +103,8 @@ func TestEnvSetsOfflineSwitches(t *testing.T) {
 	m := envMap(t, Env(testCfg(), 1, nil))
 	for _, k := range []string{
 		"DISABLE_UPDATES", "DISABLE_AUTOUPDATER", "DISABLE_TELEMETRY",
-		"DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+		"DISABLE_ERROR_REPORTING", "DISABLE_BUG_COMMAND", "DISABLE_COST_WARNINGS",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 	} {
 		if m[k] != "1" {
 			t.Errorf("%s = %q, want 1", k, m[k])

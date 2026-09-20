@@ -28,6 +28,16 @@ for tool in curl gpg shasum zip go python3; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 1; }
 done
 
+# Every gpg operation below runs against a keyring created for this run and
+# thrown away with $work (see the trap above). Importing into the operator's
+# real ~/.gnupg would mean verifying against every key they happen to trust:
+# on a developer machine holding other keys, a manifest signed by any one of
+# them would satisfy a "Good signature" check. This keyring holds exactly one
+# key -- the one fetched from $KEY_URL and matched against $FINGERPRINT below.
+export GNUPGHOME="$work/gnupg"
+mkdir -p "$GNUPGHOME"
+chmod 700 "$GNUPGHOME"
+
 echo "==> Importing the release signing key"
 curl -fsSL "$KEY_URL" | gpg --quiet --import
 
@@ -45,11 +55,23 @@ echo "    fingerprint verified"
 echo "==> Downloading and verifying manifest for $VERSION"
 curl -fsSL -o "$work/manifest.json"     "$REPO/$VERSION/manifest.json"
 curl -fsSL -o "$work/manifest.json.sig" "$REPO/$VERSION/manifest.json.sig"
-gpg --verify "$work/manifest.json.sig" "$work/manifest.json" 2>&1 | grep -q "Good signature" || {
-  echo "FATAL: manifest signature check failed" >&2
+# The gate is VALIDSIG on the machine-readable status output, not "Good
+# signature" on the human-readable one. "Good signature" only says some key in
+# the keyring signed this; VALIDSIG names the key, so this binds the signature
+# to $FINGERPRINT -- the single check the whole air-gap story rests on. This is
+# the one download whose contents decide what every later check compares
+# against, so it must fail closed.
+#
+# The status output is captured rather than piped into `grep -q`: `set -o
+# pipefail` is in force above, and `grep -q` exits on its first match, which
+# can hand gpg a SIGPIPE and fail the pipeline on a signature that was in fact
+# good. gpg's own exit status is deliberately not the gate -- VALIDSIG is.
+gpg_status="$(gpg --status-fd=1 --verify "$work/manifest.json.sig" "$work/manifest.json" 2>/dev/null || true)"
+if ! grep -qE "^\[GNUPG:\] VALIDSIG ${FINGERPRINT}( |$)" <<< "$gpg_status"; then
+  echo "FATAL: manifest is not validly signed by $FINGERPRINT" >&2
   exit 1
-}
-echo "    manifest signature good"
+fi
+echo "    manifest signature good (VALIDSIG $FINGERPRINT)"
 
 expected="$(python3 -c "
 import json,sys

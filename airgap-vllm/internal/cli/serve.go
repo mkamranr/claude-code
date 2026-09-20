@@ -38,9 +38,12 @@ func Serve(args []string) error {
 		return err
 	}
 
-	cfg, err := config.Load()
+	cfg, warnings, err := config.Load()
 	if err != nil {
 		return err
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "claude-vllm: WARN %s\n", w)
 	}
 	if err := cfg.Validate(); err != nil {
 		return err

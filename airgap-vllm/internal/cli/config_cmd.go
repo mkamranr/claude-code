@@ -16,7 +16,7 @@ import (
 
 var configKeys = []string{
 	"url", "model", "api_key", "mode", "max_tokens",
-	"context_window", "supports_thinking", "log",
+	"context_window", "log",
 }
 
 // ApplyAssignments applies key=value pairs so nobody has to hand-edit JSON.
@@ -52,12 +52,6 @@ func ApplyAssignments(c *config.Config, args []string) error {
 				return fmt.Errorf("context_window must be a number, got %q", v)
 			}
 			c.ContextWindow = n
-		case "supports_thinking":
-			b, err := strconv.ParseBool(v)
-			if err != nil {
-				return fmt.Errorf("supports_thinking must be true or false, got %q", v)
-			}
-			c.SupportsThinking = b
 		default:
 			sorted := append([]string{}, configKeys...)
 			sort.Strings(sorted)
@@ -105,11 +99,14 @@ func ConfigShow() error {
 // configShow does the actual work against an injected writer so the
 // redaction behavior has a regression test that doesn't depend on os.Stdout.
 func configShow(out io.Writer) error {
-	c, err := config.Load()
+	c, warnings, err := config.Load()
 	if err != nil {
 		return err
 	}
 	path, _ := config.Path()
+	for _, w := range warnings {
+		fmt.Fprintf(out, "WARN  %s\n", w)
+	}
 
 	display := c
 	if display.APIKey != "" {

@@ -40,7 +40,15 @@ func ClaudeBinary() (string, error) {
 
 // Run starts the bridge on an ephemeral loopback port, then runs Claude Code
 // against it, tearing the bridge down when the child exits.
-func Run(cfg config.Config, args []string) (int, error) {
+//
+// warnings are the non-fatal configuration problems config.Load collected —
+// typically a malformed CLAUDE_VLLM_* override. They are printed before the
+// session starts rather than dropped, because the alternative is an operator
+// debugging a setting they believe they changed.
+func Run(cfg config.Config, warnings []string, args []string) (int, error) {
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "claude-vllm: WARN %s\n", w)
+	}
 	if err := cfg.Validate(); err != nil {
 		return 1, err
 	}

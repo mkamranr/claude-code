@@ -66,10 +66,25 @@ check instead of letting it time out, re-run with `.\install.ps1
 -SkipSignatureCheck` — the SHA256 verification still runs regardless and needs
 no network under any policy.
 
+Note what that signature check does and does not cover. `claude.exe` is
+Authenticode-signed by Anthropic, so its signature is an independent statement
+about the file. `claude-vllm.exe` is not signed: its only integrity check
+across the air gap is its entry in the in-bundle `SHA256SUMS`, and that file
+travels inside the same zip. Anyone who could alter `claude-vllm.exe` in
+transit could alter `SHA256SUMS` to match. If the bundle's own provenance
+matters to you, verify the zip's SHA256 (printed by `stage.sh` at the end of
+the run) against a value carried over a separate channel.
+
 ## Configuration
 
-Settings live in `%USERPROFILE%\.claude-vllm\config.json`, written with
-0600-equivalent permissions since it can hold a vLLM API key. Change settings
+Settings live in `%USERPROFILE%\.claude-vllm\config.json`. It can hold a vLLM
+API key, so it is written with mode 0600 — which really is owner-only on
+Unix-like systems, but not on Windows: Go's `os.Chmod` there only toggles the
+read-only attribute and writes no ACL. On Windows the file's actual protection
+is whatever your `%USERPROFILE%` grants, inherited from the parent directory.
+If your `%USERPROFILE%` is readable by others — a roaming profile, a shared
+administrative account — treat the key in this file as readable by them too,
+and prefer `CLAUDE_VLLM_API_KEY` in the session environment. Change settings
 with:
 
 ```powershell
@@ -86,13 +101,26 @@ claude-vllm config show
 | `mode` | `auto` (default), `messages`, or `openai` to force a lane |
 | `max_tokens` | Default response cap |
 | `context_window` | Must match what vLLM was launched with |
-| `supports_thinking` | Leave false unless your server runs a reasoning parser |
 | `log` | `off` (default), `requests`, or `full` |
 
 Every key is also settable as an environment variable: `CLAUDE_VLLM_URL`,
 `CLAUDE_VLLM_MODEL`, `CLAUDE_VLLM_API_KEY`, `CLAUDE_VLLM_MODE`,
-`CLAUDE_VLLM_MAX_TOKENS`, `CLAUDE_VLLM_CONTEXT_WINDOW`,
-`CLAUDE_VLLM_SUPPORTS_THINKING`, `CLAUDE_VLLM_LOG`.
+`CLAUDE_VLLM_MAX_TOKENS`, `CLAUDE_VLLM_CONTEXT_WINDOW`, `CLAUDE_VLLM_LOG`. A
+value that cannot be parsed — `CLAUDE_VLLM_CONTEXT_WINDOW=131o72` — is not
+fatal: the previous value is kept, and `claude-vllm doctor`, `config show` and
+startup all say so rather than leaving you to wonder why the override did
+nothing.
+
+There is deliberately no setting here for model capabilities such as extended
+thinking. Claude Code detects those itself, and claude-vllm cannot validate the
+token values that would override that detection, so it does not offer to guess
+them. If the detection is wrong for your model, set the override where Claude
+Code documents it — add the relevant
+`ANTHROPIC_DEFAULT_<TIER>_MODEL_SUPPORTED_CAPABILITIES` entry to the `env`
+block of `%USERPROFILE%\.claude\settings.json` directly. `<TIER>` is `OPUS`,
+`SONNET` or `HAIKU`; claude-vllm maps all three to your one served model.
+claude-vllm strips any inherited value of these from the child process, so
+settings.json is the place that actually takes effect.
 
 `claude-vllm config show` prints the effective configuration (file plus any
 environment overrides) with `api_key` redacted, so it is safe to paste into a

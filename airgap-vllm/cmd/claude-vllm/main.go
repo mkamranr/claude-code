@@ -22,7 +22,7 @@ Usage:
   claude-vllm config show        Print the effective configuration
   claude-vllm config set k=v...  Change configuration
                                  keys: url model api_key mode max_tokens
-                                       context_window supports_thinking log
+                                       context_window log
   claude-vllm -- [claude args...]
                                  Bypass claude-vllm's own subcommands (e.g. to
                                  pass -h/--help/setup/doctor/serve/config
@@ -73,11 +73,11 @@ func run(args []string) error {
 		}
 	}
 
-	cfg, err := config.Load()
+	cfg, warnings, err := config.Load()
 	if err != nil {
 		return err
 	}
-	code, err := launch.Run(cfg, args)
+	code, err := launch.Run(cfg, warnings, args)
 	if err != nil {
 		return err
 	}

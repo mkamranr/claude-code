@@ -23,9 +23,19 @@ import (
 // exit non-zero but must not print the error a second time.
 var ErrReported = errors.New("already reported")
 
-// toolCallHint is printed whenever the smoke test fails. The correct parser is
-// model-specific and cannot be determined from the bridge, so the message names
-// the knob rather than guessing a value.
+// ErrNoToolCall and ErrToolCallUnnamed are the two smoke-test failures that
+// actually implicate vLLM's tool-call parsing. Everything else the smoke test
+// can return — a transport failure, an HTTP error, a timeout — says nothing
+// about the parser, and telling an operator to go change --tool-call-parser
+// over a slow first generation sends them to rebuild a server that was fine.
+var (
+	ErrNoToolCall      = errors.New("model returned prose instead of a tool call; vLLM is likely missing --enable-auto-tool-choice")
+	ErrToolCallUnnamed = errors.New("model emitted a tool call with no name; the tool-call parser is probably wrong")
+)
+
+// toolCallHint is printed when the smoke test failed in a tool-shaped way. The
+// correct parser is model-specific and cannot be determined from the bridge, so
+// the message names the knob rather than guessing a value.
 const toolCallHint = `
 Tool calling did not work. Claude Code is tool-heavy and will be unusable
 until it does. This is a vLLM server setting, not a bridge setting.
@@ -49,9 +59,15 @@ func Doctor(out io.Writer) error {
 	path, _ := config.Path()
 	fmt.Fprintf(out, "config file      %s\n", path)
 
-	cfg, err := config.Load()
+	cfg, warnings, err := config.Load()
 	if err != nil {
 		return err
+	}
+	// A CLAUDE_VLLM_* override that could not be parsed was dropped, and the
+	// value printed below is the one it failed to replace. Doctor is where
+	// that has to be said out loud.
+	for _, w := range warnings {
+		fmt.Fprintf(out, "WARN  %s\n", w)
 	}
 	fmt.Fprintf(out, "vLLM URL         %s\n", cfg.VLLMURL)
 	fmt.Fprintf(out, "model            %s\n", cfg.Model)
@@ -62,6 +78,10 @@ func Doctor(out io.Writer) error {
 		return ErrReported
 	}
 
+	// Detection is a handful of small metadata requests; 20s is generous for
+	// those and keeps an unreachable server from hanging the command. The
+	// smoke test gets its own, much longer budget below — sharing this one
+	// made a slow first generation look like a broken tool-call parser.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -111,16 +131,29 @@ func Doctor(out io.Writer) error {
 		fmt.Fprintf(out, "claude binary    %s\n", bin)
 	}
 
-	lg, err := server.NewLogger("off", filepath.Join(filepath.Dir(path), "log"))
+	// Honour the configured log level. README tells an operator debugging tool
+	// calling to set log=full and read the bodies; hardcoding "off" here meant
+	// the one command that reproduces the problem wrote nothing to read.
+	lg, err := server.NewLogger(cfg.Log, filepath.Join(filepath.Dir(path), "log"))
 	if err != nil {
 		return err
 	}
 	handler := server.New(cfg, caps, lg).Handler()
 
+	// The smoke test asks for up to 256 tokens from a real model. A large model
+	// answering its first request after load — weights still paging in, no warm
+	// KV cache — can take a minute or more on modest hardware, and that is a
+	// healthy server, not a broken one. 120s is long enough that a timeout here
+	// means something is genuinely wrong.
+	smokeCtx, smokeCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer smokeCancel()
+
 	fmt.Fprintf(out, "\nrunning tool-calling smoke test...\n")
-	if err := SmokeTest(ctx, handler, cfg.Model); err != nil {
+	if err := SmokeTest(smokeCtx, handler, cfg.Model); err != nil {
 		fmt.Fprintf(out, "FAIL  %v\n", err)
-		fmt.Fprint(out, toolCallHint)
+		if errors.Is(err, ErrNoToolCall) || errors.Is(err, ErrToolCallUnnamed) {
+			fmt.Fprint(out, toolCallHint)
+		}
 		return ErrReported
 	}
 	fmt.Fprintf(out, "PASS  the model emitted a well-formed tool call\n")
@@ -194,12 +227,12 @@ func SmokeTest(ctx context.Context, handler http.Handler, model string) error {
 			continue
 		}
 		if b.Name == "" {
-			return fmt.Errorf("model emitted a tool call with no name; the tool-call parser is probably wrong")
+			return ErrToolCallUnnamed
 		}
 		if b.ID == "" {
 			return fmt.Errorf("tool call %q has no id", b.Name)
 		}
 		return nil
 	}
-	return fmt.Errorf("model returned prose instead of a tool call; vLLM is likely missing --enable-auto-tool-choice")
+	return ErrNoToolCall
 }

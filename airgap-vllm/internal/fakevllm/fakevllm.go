@@ -103,15 +103,19 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
-		Stream bool `json:"stream"`
+		Stream        bool `json:"stream"`
+		StreamOptions *struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
 	}
 	json.Unmarshal(body, &req)
 
 	if req.Stream {
+		includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 		for _, c := range s.cfg.StreamChunks {
-			fmt.Fprintf(w, "data: %s\n\n", c)
+			fmt.Fprintf(w, "data: %s\n\n", stripUsageUnlessRequested(c, includeUsage))
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -124,6 +128,34 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	io.WriteString(w, s.cfg.ChatCompletion)
+}
+
+// stripUsageUnlessRequested models the one streaming behaviour of vLLM's
+// OpenAI server that a double is otherwise free to get wrong: usage appears on
+// streamed chunks only when the request carried
+// stream_options.include_usage. A fake that always emits usage lets the bridge
+// forget to ask for it and still look healthy in every test, which is exactly
+// how the bridge shipped reporting zero tokens for an entire session.
+//
+// When the caller did ask, the configured chunk is returned byte for byte, so
+// no existing Config value changes behaviour.
+func stripUsageUnlessRequested(chunk string, includeUsage bool) string {
+	if includeUsage {
+		return chunk
+	}
+	var decoded map[string]any
+	if json.Unmarshal([]byte(chunk), &decoded) != nil {
+		return chunk // not an object; nothing to strip
+	}
+	if _, ok := decoded["usage"]; !ok {
+		return chunk
+	}
+	delete(decoded, "usage")
+	out, err := json.Marshal(decoded)
+	if err != nil {
+		return chunk
+	}
+	return string(out)
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {

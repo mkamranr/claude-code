@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,11 @@ import (
 	"claude-vllm/internal/probe"
 	"claude-vllm/internal/server"
 )
+
+// ErrReported marks an error whose explanation the command already wrote to
+// its own output (e.g. Doctor's FAIL blocks). Callers such as main must still
+// exit non-zero but must not print the error a second time.
+var ErrReported = errors.New("already reported")
 
 // toolCallHint is printed whenever the smoke test fails. The correct parser is
 // model-specific and cannot be determined from the bridge, so the message names
@@ -53,7 +59,7 @@ func Doctor(out io.Writer) error {
 
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(out, "\nFAIL  %v\n", err)
-		return err
+		return ErrReported
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -63,7 +69,7 @@ func Doctor(out io.Writer) error {
 	if err != nil {
 		fmt.Fprintf(out, "\nFAIL  %v\n", err)
 		fmt.Fprintf(out, "\nFix with:  claude-vllm config set url=http://HOST:PORT\n")
-		return err
+		return ErrReported
 	}
 	mode := probe.ResolveMode(cfg.Mode, caps)
 	fmt.Fprintf(out, "reachable        yes\n")
@@ -75,7 +81,7 @@ func Doctor(out io.Writer) error {
 	if !caps.HasModel(cfg.Model) {
 		fmt.Fprintf(out, "\nFAIL  configured model %q is not served.\n", cfg.Model)
 		fmt.Fprintf(out, "Pick one of the models above:\n  claude-vllm config set model=NAME\n")
-		return fmt.Errorf("model %q not served", cfg.Model)
+		return ErrReported
 	}
 
 	// The configured context window is a claude-vllm setting; the server's
@@ -115,7 +121,7 @@ func Doctor(out io.Writer) error {
 	if err := SmokeTest(ctx, handler, cfg.Model); err != nil {
 		fmt.Fprintf(out, "FAIL  %v\n", err)
 		fmt.Fprint(out, toolCallHint)
-		return err
+		return ErrReported
 	}
 	fmt.Fprintf(out, "PASS  the model emitted a well-formed tool call\n")
 	fmt.Fprintf(out, "\nAll checks passed. Start with: claude-vllm\n")

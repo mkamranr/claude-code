@@ -14,14 +14,27 @@ import (
 	"claude-vllm/internal/server"
 )
 
+// parseServeAddr parses serve's own flags and returns the address to listen
+// on. Extracted from Serve so the default is independently testable: the
+// bridge has no authentication, so 127.0.0.1 (not 0.0.0.0) is a security
+// property of this default, not a mere preference, and a future edit that
+// accidentally widens it should fail a test rather than ship silently.
+func parseServeAddr(args []string) (string, error) {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	addr := fs.String("addr", "127.0.0.1:8787", "address to listen on")
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	return *addr, nil
+}
+
 // Serve runs the bridge in the foreground, without launching Claude Code.
 // Useful for debugging the bridge on its own, and for pointing several Claude
 // Code sessions at one long-lived bridge instead of spawning a fresh one per
 // session.
 func Serve(args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	addr := fs.String("addr", "127.0.0.1:8787", "address to listen on")
-	if err := fs.Parse(args); err != nil {
+	addr, err := parseServeAddr(args)
+	if err != nil {
 		return err
 	}
 
@@ -51,8 +64,8 @@ func Serve(args []string) error {
 	defer lg.Close()
 
 	srv := server.New(cfg, caps, lg)
-	fmt.Fprintf(os.Stderr, "bridge listening on http://%s (mode: %s, model: %s)\n", *addr, srv.Mode(), cfg.Model)
+	fmt.Fprintf(os.Stderr, "bridge listening on http://%s (mode: %s, model: %s)\n", addr, srv.Mode(), cfg.Model)
 	fmt.Fprintf(os.Stderr, "point Claude Code at it with:\n")
-	fmt.Fprintf(os.Stderr, "  ANTHROPIC_BASE_URL=http://%s ANTHROPIC_AUTH_TOKEN=local-vllm claude\n", *addr)
-	return http.ListenAndServe(*addr, srv.Handler())
+	fmt.Fprintf(os.Stderr, "  ANTHROPIC_BASE_URL=http://%s ANTHROPIC_AUTH_TOKEN=local-vllm claude\n", addr)
+	return http.ListenAndServe(addr, srv.Handler())
 }

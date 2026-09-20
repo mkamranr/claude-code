@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -31,7 +32,9 @@ Usage:
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "claude-vllm: %v\n", err)
+		if !errors.Is(err, cli.ErrReported) {
+			fmt.Fprintf(os.Stderr, "claude-vllm: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }

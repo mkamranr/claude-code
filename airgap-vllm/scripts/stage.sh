@@ -9,6 +9,10 @@
 set -euo pipefail
 
 VERSION="${1:-2.1.252}"
+if ! [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "FATAL: invalid version string: $VERSION" >&2
+  exit 1
+fi
 PLATFORM="win32-x64"
 BINARY="claude.exe"
 FINGERPRINT="31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
@@ -26,9 +30,14 @@ done
 
 echo "==> Importing the release signing key"
 curl -fsSL "$KEY_URL" | gpg --quiet --import
-if ! gpg --fingerprint security@anthropic.com 2>/dev/null \
-     | tr -d ' \n' | grep -qi "$FINGERPRINT"; then
-  echo "FATAL: signing key fingerprint does not match $FINGERPRINT" >&2
+
+imported_fprs="$(gpg --list-keys --with-colons | awk -F: '$1=="fpr"{print $10}')"
+if [ -z "$imported_fprs" ]; then
+  echo "FATAL: no key was imported from $KEY_URL" >&2
+  exit 1
+fi
+if ! grep -qx "$FINGERPRINT" <<< "$imported_fprs"; then
+  echo "FATAL: imported key does not carry fingerprint $FINGERPRINT" >&2
   exit 1
 fi
 echo "    fingerprint verified"
@@ -72,8 +81,10 @@ echo "==> Writing SHA256SUMS"
 
 mkdir -p "$out"
 bundle="$out/claude-vllm-airgap-$VERSION.zip"
-rm -f "$bundle"
-( cd "$work" && zip -q -r "$bundle" claude.exe claude-vllm.exe install.ps1 README.md SHA256SUMS )
+tmp_bundle="$out/.claude-vllm-airgap-$VERSION.zip.tmp"
+rm -f "$tmp_bundle"
+( cd "$work" && zip -q -r "$tmp_bundle" claude.exe claude-vllm.exe install.ps1 README.md SHA256SUMS )
+mv "$tmp_bundle" "$bundle"
 
 echo
 echo "Bundle ready: $bundle"

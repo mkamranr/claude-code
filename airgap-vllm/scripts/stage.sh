@@ -75,9 +75,9 @@ echo "    manifest signature good (VALIDSIG $FINGERPRINT)"
 
 expected="$(python3 -c "
 import json,sys
-m=json.load(open('$work/manifest.json'))
+m=json.load(sys.stdin)
 print(m['platforms']['$PLATFORM']['checksum'])
-")"
+" < "$work/manifest.json")"
 [ -n "$expected" ] || { echo "FATAL: no checksum for $PLATFORM in manifest" >&2; exit 1; }
 
 echo "==> Downloading $BINARY ($PLATFORM)"

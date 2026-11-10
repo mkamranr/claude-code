@@ -5,7 +5,10 @@
 // All functions are pure: no network, no clock, no filesystem.
 package filter
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // allowedBlockTypes is a whitelist. Anything else is dropped, because a single
 // unrecognized content block type fails the entire request on strict servers.
@@ -35,8 +38,17 @@ func Request(req map[string]any) (map[string]any, []string) {
 	var notes []string
 	out := cloneMap(req)
 
+	// The system prompt is collapsed to a single string. Claude Code sends it
+	// as several text blocks; vLLM's Anthropic adapter turns each block into
+	// its own system message, and chat templates that require exactly one
+	// leading system message (Qwen's raises "System message must be at the
+	// beginning.") then reject the request. Any role:"system" entries inside
+	// messages are hoisted into the same string for the same reason.
+	var sysParts []string
 	if sys, ok := out["system"]; ok {
-		out["system"] = filterContent(sys, &notes, "system")
+		if s := systemText(filterContent(sys, &notes, "system")); s != "" {
+			sysParts = append(sysParts, s)
+		}
 	}
 
 	if msgs, ok := out["messages"].([]any); ok {
@@ -47,6 +59,13 @@ func Request(req map[string]any) (map[string]any, []string) {
 				filtered = append(filtered, raw)
 				continue
 			}
+			if role, _ := msg["role"].(string); role == "system" {
+				if s := systemText(msg["content"]); s != "" {
+					sysParts = append(sysParts, s)
+				}
+				notes = append(notes, fmt.Sprintf("moved messages[%d] (role system) into the system prompt", i))
+				continue
+			}
 			m := cloneMap(msg)
 			delete(m, "cache_control")
 			if c, ok := m["content"]; ok {
@@ -55,6 +74,12 @@ func Request(req map[string]any) (map[string]any, []string) {
 			filtered = append(filtered, m)
 		}
 		out["messages"] = filtered
+	}
+
+	if len(sysParts) > 0 {
+		out["system"] = strings.Join(sysParts, "\n\n")
+	} else {
+		delete(out, "system")
 	}
 
 	if tools, ok := out["tools"].([]any); ok {
@@ -181,6 +206,26 @@ func EnsureToolUseIDs(content []any, gen func() string) []any {
 		out[i] = block
 	}
 	return out
+}
+
+// systemText reduces a string or block array to plain text, joining text
+// blocks with a blank line so adjacent blocks don't run together.
+func systemText(v any) string {
+	switch c := v.(type) {
+	case string:
+		return c
+	case []any:
+		var parts []string
+		for _, raw := range c {
+			if m, ok := raw.(map[string]any); ok {
+				if s, ok := m["text"].(string); ok && s != "" {
+					parts = append(parts, s)
+				}
+			}
+		}
+		return strings.Join(parts, "\n\n")
+	}
+	return ""
 }
 
 func cloneMap(m map[string]any) map[string]any {

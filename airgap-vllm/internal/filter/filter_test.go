@@ -152,3 +152,48 @@ func TestAllowsKnownToolBlockTypes(t *testing.T) {
 		t.Errorf("unknown block advisor_20260301 survived: %s", got)
 	}
 }
+
+// Reproduces 400 "System message must be at the beginning." from Qwen chat
+// templates: a multi-block system prompt became several system messages.
+func TestCollapsesSystemBlocksToOneString(t *testing.T) {
+	in := decode(t, `{"system":[
+		{"type":"text","text":"header"},
+		{"type":"text","text":"identity","cache_control":{"type":"ephemeral"}},
+		{"type":"text","text":"main prompt"}],
+		"messages":[{"role":"user","content":"hi"}]}`)
+	out, _ := Request(in)
+	if got, want := out["system"], "header\n\nidentity\n\nmain prompt"; got != want {
+		t.Errorf("system = %#v, want %q", got, want)
+	}
+}
+
+func TestHoistsSystemRoleMessages(t *testing.T) {
+	in := decode(t, `{"system":"base","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"system","content":[{"type":"text","text":"late"}]},
+		{"role":"assistant","content":"ok"}]}`)
+	out, notes := Request(in)
+	if got, want := out["system"], "base\n\nlate"; got != want {
+		t.Errorf("system = %#v, want %q", got, want)
+	}
+	msgs := out["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 messages after hoisting, got %d: %s", len(msgs), encode(t, msgs))
+	}
+	for _, m := range msgs {
+		if m.(map[string]any)["role"] == "system" {
+			t.Errorf("system-role message survived: %s", encode(t, msgs))
+		}
+	}
+	if len(notes) == 0 {
+		t.Error("hoisting produced no note")
+	}
+}
+
+func TestNoSystemStaysAbsent(t *testing.T) {
+	in := decode(t, `{"messages":[{"role":"user","content":"hi"}]}`)
+	out, _ := Request(in)
+	if _, ok := out["system"]; ok {
+		t.Errorf("system key appeared: %s", encode(t, out))
+	}
+}

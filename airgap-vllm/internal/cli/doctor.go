@@ -138,6 +138,9 @@ func Doctor(out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// Close the log file before returning: Windows cannot delete a file that
+	// is still open, so a leaked handle blocks clearing the log directory.
+	defer lg.Close()
 	handler := server.New(cfg, caps, lg).Handler()
 
 	// The smoke test asks for up to 256 tokens from a real model. A large model

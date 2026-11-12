@@ -3,7 +3,7 @@
 A fork of [`anthropics/claude-code`](https://github.com/anthropics/claude-code) that adds
 **`airgap-vllm/`**: a small Go bridge for running Claude Code against a self-hosted
 [vLLM](https://github.com/vllm-project/vllm) server on a machine with **no internet access
-and no sign-in**.
+and no sign-in**, from the terminal or from a **desktop app**.
 
 Everything outside `airgap-vllm/` is upstream content, unmodified.
 
@@ -12,7 +12,9 @@ Everything outside `airgap-vllm/` is upstream content, unmodified.
 Claude Code is built by [Anthropic](https://www.anthropic.com). This fork adds nothing to
 Claude Code itself — it does not patch, wrap, or reimplement it. The bridge is an ordinary
 HTTP service that speaks the Anthropic Messages API on one side and vLLM on the other, and
-Claude Code talks to it through the documented `ANTHROPIC_BASE_URL` extension point.
+Claude Code talks to it through the documented `ANTHROPIC_BASE_URL` extension point. The
+desktop app drives the same unmodified, signed `claude.exe` through its documented headless
+mode (`-p` with stream-json input and output); it is a front end, not a reimplementation.
 
 - Upstream repository: <https://github.com/anthropics/claude-code>
 - Official documentation: <https://code.claude.com/docs/en/overview>
@@ -26,23 +28,27 @@ access under Anthropic's terms; this bridge does not alter, bypass, or substitut
 
 ```
 airgap-vllm/
-  cmd/claude-vllm/        CLI entry point
-  internal/config/        settings, env overrides, validation
-  internal/filter/        request compatibility filter
-  internal/translate/     Anthropic <-> OpenAI, including SSE streaming
-  internal/probe/         vLLM capability detection
-  internal/server/        the HTTP bridge
-  internal/launch/        environment contract and process supervision
-  internal/cli/           setup, doctor, serve, config
-  internal/fakevllm/      in-process vLLM double used by the tests
-  scripts/stage.sh        builds a verifiable bundle on a connected machine
-  install.ps1             offline Windows installer
-  README.md               full operator runbook
+  cmd/claude-vllm/          CLI entry point
+  cmd/claude-vllm-desktop/  desktop app: Wails window + embedded HTML/CSS/JS UI
+  internal/config/          settings, env overrides, validation
+  internal/filter/          request compatibility filter
+  internal/translate/       Anthropic <-> OpenAI, including SSE streaming
+  internal/probe/           vLLM capability detection
+  internal/server/          the HTTP bridge
+  internal/launch/          bridge startup, environment contract, process supervision
+  internal/desktop/         desktop backend: headless sessions, permission prompts, history
+  internal/cli/             setup, doctor, serve, config
+  internal/fakevllm/        in-process vLLM double used by the tests
+  scripts/stage.sh          builds a verifiable bundle on a connected machine
+  install.ps1               offline Windows installer
+  README.md                 full operator runbook
 ```
 
-Roughly 6,400 lines of Go, **standard library only — zero third-party modules**, so
-`go build` works with an empty module cache. Cross-compiles to a single static
-`claude-vllm.exe` for Windows x64.
+Roughly 8,000 lines of Go plus a 1,200-line plain-JS UI with no npm dependencies.
+**`claude-vllm.exe` links no third-party code** and still builds offline with an empty
+module cache; the desktop app adds one third-party module, [Wails v2](https://wails.io),
+and the WebView2 runtime it renders with (bundled, since the target has none). Both
+cross-compile to Windows x64 executables. Building needs Go 1.26 or newer.
 
 Design notes and the implementation plan are in
 [`docs/superpowers/specs/`](docs/superpowers/specs/) and
@@ -65,6 +71,12 @@ way in both.
 
 It binds loopback only and exits when Claude Code exits.
 
+The desktop app (`claude-vllm-desktop.exe`) starts the same bridge and runs the same
+`claude.exe` headlessly (`--input-format/--output-format stream-json`), rendering the event
+stream as a chat. It adds a folder picker, inline diffs for edits, an approve/deny dialog
+for each tool call (served through Claude Code's `--permission-prompt-tool` hook), Stop and
+resume, and the folder's session history.
+
 ## Setting this up on an air-gapped machine
 
 Two machines are involved: a **connected build machine** that assembles a verifiable
@@ -76,15 +88,20 @@ Requires `curl`, `gpg`, `shasum`, `zip`, `go` and `python3`. **`gpg` is the one 
 missing** — the script aborts at its preflight if any tool is absent, before touching the
 network.
 
+For the desktop app, also download Microsoft's WebView2 **Fixed Version** runtime (x64
+`.cab`) and pass its path:
+
 ```bash
 cd airgap-vllm
+WEBVIEW2_CAB=/path/to/Microsoft.WebView2.FixedVersionRuntime.<ver>.x64.cab \
 ./scripts/stage.sh 2.1.252
 ```
 
 This imports Anthropic's release signing key into a throwaway keyring, verifies the release
 manifest is validly signed by fingerprint `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`,
 downloads the pinned `claude.exe`, checks its SHA256 against the signed manifest,
-cross-compiles the bridge, and writes `dist/claude-vllm-airgap-2.1.252.zip`.
+cross-compiles the bridge and the desktop app, unpacks the WebView2 runtime, and writes
+`dist/claude-vllm-airgap-2.1.252.zip`.
 
 It refuses to emit a bundle if any verification step fails. That is the point of it.
 
@@ -98,11 +115,14 @@ needed to verify it travels inside.
 From PowerShell — no network, no administrator rights:
 
 ```powershell
-.\install.ps1          # re-verifies SHA256SUMS and claude.exe's Authenticode signature
+.\install.ps1          # re-verifies SHA256SUMS and the Authenticode signatures
 claude-vllm setup      # enter your vLLM URL; pick a model from the list it fetches
 claude-vllm doctor     # verify connectivity, mode, and tool calling
 claude-vllm            # start Claude Code
 ```
+
+Or open **Claude vLLM Desktop** from the Start Menu. It opens its Settings screen when
+nothing is configured yet, and can run the same doctor there.
 
 `setup` probes your server and offers a menu of the models it actually serves, so nothing
 has to be typed from memory.
@@ -147,13 +167,26 @@ test and tells you when this is wrong — run it before concluding anything else
 
 ## Status
 
-The Go code is complete: 8 packages, `go test`, `go vet` and `gofmt` all clean, building to
-a Windows executable. Three things can only be verified in a real deployment and are the
-operator's acceptance steps:
+The Go code is complete: 9 packages and 2 commands, with `go test`, `go vet` and `gofmt`
+all clean.
 
-1. `install.ps1` parsed by PowerShell on a Windows host.
-2. A full `stage.sh` run against the live release bucket.
-3. `claude-vllm doctor`'s tool-calling smoke test against your model.
+Verified on a Windows 10 host:
+
+- A full `stage.sh` run against the live release bucket (GPG `VALIDSIG`, SHA256, both
+  cross-compiles, WebView2 unpacking, `SHA256SUMS` over every file).
+- `install.ps1` run by PowerShell against that bundle. It rejected an unsigned runtime
+  and installed with `-SkipSignatureCheck`.
+- The desktop app driven end to end against `claude.exe` 2.1.252 and a stand-in vLLM:
+  - streamed replies, approve and deny, the inline diff
+  - Stop then resume, history replay
+  - doctor from Settings
+  - a WebView2 runtime loaded from the bundled `webview2\` folder
+
+Still the operator's acceptance steps, because they need your environment:
+
+1. `claude-vllm doctor`'s tool-calling smoke test against your model.
+2. The desktop app on the real air-gapped target, with the WebView2 Fixed Version cab you
+   staged.
 
 See [`airgap-vllm/README.md`](airgap-vllm/README.md) for the full runbook, including
 troubleshooting.

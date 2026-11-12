@@ -1,23 +1,30 @@
 <#
 .SYNOPSIS
-  Install Claude Code and the vLLM bridge on an air-gapped Windows machine.
+  Install Claude Code, the vLLM bridge and the desktop app on an air-gapped
+  Windows machine.
 .DESCRIPTION
-  Verifies SHA256SUMS locally, checks the Authenticode signature on claude.exe,
-  installs both binaries to %USERPROFILE%\.local\bin, and adds that directory to
-  the user PATH. Requires no network and no administrator rights.
+  Verifies SHA256SUMS locally, checks the Authenticode signatures on claude.exe
+  and the bundled WebView2 runtime, installs everything to
+  %USERPROFILE%\.local\bin, adds that directory to the user PATH, and creates a
+  "Claude vLLM Desktop" Start Menu shortcut. Requires no network and no
+  administrator rights.
 .PARAMETER InstallDir
-  Where to install claude.exe and claude-vllm.exe. Defaults to
-  %USERPROFILE%\.local\bin.
+  Where to install claude.exe, claude-vllm.exe, claude-vllm-desktop.exe and the
+  webview2 runtime folder. Defaults to %USERPROFILE%\.local\bin.
+.PARAMETER NoShortcut
+  Do not create the Start Menu shortcut for the desktop app.
 .PARAMETER SkipSignatureCheck
-  Skip the Authenticode check on claude.exe. Use this if your organization's
-  policy blocks WinVerifyTrust's revocation check outright rather than letting
-  it time out and continue (see the note printed by Assert-Signature below).
+  Skip the Authenticode checks on claude.exe and the WebView2 runtime. Use this
+  if your organization's policy blocks WinVerifyTrust's revocation check
+  outright rather than letting it time out and continue (see the note printed
+  by Assert-Signature below).
   The SHA256 check in Assert-Checksums still runs either way.
 #>
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:USERPROFILE ".local\bin"),
-    [switch]$SkipSignatureCheck
+    [switch]$SkipSignatureCheck,
+    [switch]$NoShortcut
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,18 +68,55 @@ function Assert-Signature {
 Write-Host "==> Verifying bundle checksums"
 Assert-Checksums
 
+$webview2Source = Join-Path $source "webview2"
+$hasWebView2 = Test-Path (Join-Path $webview2Source "msedgewebview2.exe")
+$hasDesktop = Test-Path (Join-Path $source "claude-vllm-desktop.exe")
+
 if (-not $SkipSignatureCheck) {
     Write-Host "==> Verifying the Claude Code code signature"
     Assert-Signature (Join-Path $source "claude.exe")
+    if ($hasWebView2) {
+        Write-Host "==> Verifying the WebView2 runtime code signature"
+        Assert-Signature (Join-Path $webview2Source "msedgewebview2.exe")
+    }
 } else {
-    Write-Host "==> Skipping Authenticode signature check (-SkipSignatureCheck). SHA256 was still verified above."
+    Write-Host "==> Skipping Authenticode signature checks (-SkipSignatureCheck). SHA256 was still verified above."
+}
+
+if ($hasDesktop -and (Get-Process claude-vllm-desktop -ErrorAction SilentlyContinue)) {
+    throw "Claude vLLM Desktop is running. Close it, then re-run install.ps1 (its files are in use)."
 }
 
 Write-Host "==> Installing to $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-foreach ($exe in @("claude.exe", "claude-vllm.exe")) {
-    Copy-Item (Join-Path $source $exe) (Join-Path $InstallDir $exe) -Force
+foreach ($exe in @("claude.exe", "claude-vllm.exe", "claude-vllm-desktop.exe")) {
+    $from = Join-Path $source $exe
+    if (-not (Test-Path $from)) { continue }
+    Copy-Item $from (Join-Path $InstallDir $exe) -Force
     Write-Host "  installed $exe"
+}
+
+if ($hasWebView2) {
+    # Replace rather than merge: a runtime left over from an older bundle would
+    # otherwise mix files from two WebView2 versions.
+    $webview2Target = Join-Path $InstallDir "webview2"
+    if (Test-Path $webview2Target) { Remove-Item -Recurse -Force $webview2Target }
+    Copy-Item -Recurse $webview2Source $webview2Target
+    Write-Host "  installed webview2 runtime"
+} elseif ($hasDesktop) {
+    Write-Warning "This bundle has no WebView2 runtime. The desktop app will only start if WebView2 is already installed on this machine; the terminal client is unaffected."
+}
+
+if ($hasDesktop -and -not $NoShortcut) {
+    $programs = [Environment]::GetFolderPath("Programs")
+    $lnk = Join-Path $programs "Claude vLLM Desktop.lnk"
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($lnk)
+    $shortcut.TargetPath = Join-Path $InstallDir "claude-vllm-desktop.exe"
+    $shortcut.WorkingDirectory = $InstallDir
+    $shortcut.Description = "Claude Code on your self-hosted vLLM"
+    $shortcut.Save()
+    Write-Host "  Start Menu shortcut: $lnk"
 }
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -102,4 +146,8 @@ Write-Host "Installed. Next steps:" -ForegroundColor Green
 Write-Host "  1. Open a new terminal"
 Write-Host "  2. claude-vllm setup     # point at your vLLM server and pick a model"
 Write-Host "  3. claude-vllm doctor    # verify connectivity and tool calling"
-Write-Host "  4. claude-vllm           # start Claude Code"
+Write-Host "  4. claude-vllm           # start Claude Code in the terminal"
+if ($hasDesktop) {
+    Write-Host "  or open 'Claude vLLM Desktop' from the Start Menu. It opens its Settings"
+    Write-Host "  screen on first run if step 2 was skipped, and runs the same doctor there."
+}

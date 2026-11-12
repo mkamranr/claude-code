@@ -4,8 +4,20 @@
 #   ./scripts/stage.sh [claude-code-version]
 #
 # Verifies the Claude Code release with GPG and SHA256, cross-compiles the
-# bridge for Windows x64, and emits a zip plus a checksum manifest. Aborts on
-# any verification failure rather than shipping an unverified artifact.
+# bridge and the desktop app for Windows x64, and emits a zip plus a checksum
+# manifest. Aborts on any verification failure rather than shipping an
+# unverified artifact.
+#
+# Desktop app runtime (optional, but needed on targets without WebView2, which
+# includes offline Windows 10 machines that never got it from Windows Update):
+#
+#   WEBVIEW2_CAB=/path/Microsoft.WebView2.FixedVersionRuntime.<ver>.x64.cab
+#   WEBVIEW2_CAB_SHA256=<hex>   # optional: pin the cab you downloaded
+#
+# Download the x64 "Fixed Version" cab from Microsoft's WebView2 download page.
+# Its URL is versioned, so it is passed in rather than fetched here. The
+# runtime's own Authenticode signature is checked again on the target by
+# install.ps1.
 set -euo pipefail
 
 VERSION="${1:-2.1.252}"
@@ -27,6 +39,25 @@ trap 'rm -rf "$work"' EXIT
 for tool in curl gpg shasum zip go python3; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 1; }
 done
+
+# Resolve the WebView2 cab and an extractor before any download, so a missing
+# tool fails in the first second rather than after the release is fetched.
+WEBVIEW2_CAB="${WEBVIEW2_CAB:-}"
+cab_extractor=""
+if [ -n "$WEBVIEW2_CAB" ]; then
+  [ -f "$WEBVIEW2_CAB" ] || { echo "FATAL: WEBVIEW2_CAB=$WEBVIEW2_CAB does not exist" >&2; exit 1; }
+  if command -v cabextract >/dev/null; then
+    cab_extractor="cabextract"
+  elif command -v cygpath >/dev/null && [ -n "${SYSTEMROOT:-}" ] \
+       && [ -x "$(cygpath -u "$SYSTEMROOT")/System32/expand.exe" ]; then
+    # Git Bash on Windows: Windows' own expand.exe, by full path, because the
+    # expand.exe on Git Bash's PATH is the coreutils tab expander.
+    cab_extractor="$(cygpath -u "$SYSTEMROOT")/System32/expand.exe"
+  else
+    echo "missing required tool: cabextract (needed for WEBVIEW2_CAB)" >&2
+    exit 1
+  fi
+fi
 
 # Every gpg operation below runs against a keyring created for this run and
 # thrown away with $work (see the trap above). Importing into the operator's
@@ -91,21 +122,71 @@ if [ "$actual" != "$expected" ]; then
 fi
 echo "    checksum verified: $actual"
 
+# Everything that ships is assembled in $stage, apart from the keyring and
+# manifest above, so SHA256SUMS and the zip can simply take the whole folder.
+stage="$work/bundle"
+mkdir -p "$stage"
+mv "$work/$BINARY" "$stage/$BINARY"
+
 echo "==> Cross-compiling the bridge for windows/amd64"
 ( cd "$here" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-    go build -trimpath -ldflags "-s -w" -o "$work/claude-vllm.exe" ./cmd/claude-vllm )
+    go build -trimpath -ldflags "-s -w" -o "$stage/claude-vllm.exe" ./cmd/claude-vllm )
 
-cp "$here/install.ps1" "$work/install.ps1"
-cp "$here/README.md"   "$work/README.md"
+echo "==> Cross-compiling the desktop app for windows/amd64"
+# A Wails "manual build": no wails CLI and no Node toolchain. The
+# wv2runtime.error tag replaces Wails' default missing-WebView2 strategy
+# (download it), which can only hang on an air-gapped machine, with a message.
+( cd "$here" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+    go build -tags desktop,production,wv2runtime.error -trimpath \
+    -ldflags "-s -w -H windowsgui" -o "$stage/claude-vllm-desktop.exe" ./cmd/claude-vllm-desktop )
+
+if [ -n "$WEBVIEW2_CAB" ]; then
+  echo "==> Unpacking the WebView2 Fixed Version runtime"
+  cab_sum="$(shasum -a 256 "$WEBVIEW2_CAB" | awk '{print $1}')"
+  if [ -n "${WEBVIEW2_CAB_SHA256:-}" ]; then
+    if [ "$cab_sum" != "$(tr 'A-F' 'a-f' <<< "$WEBVIEW2_CAB_SHA256")" ]; then
+      echo "FATAL: WEBVIEW2_CAB checksum mismatch" >&2
+      echo "  expected $WEBVIEW2_CAB_SHA256" >&2
+      echo "  actual   $cab_sum" >&2
+      exit 1
+    fi
+    echo "    cab checksum pinned and verified: $cab_sum"
+  else
+    echo "    cab sha256 $cab_sum (set WEBVIEW2_CAB_SHA256 to pin it)"
+  fi
+  cab_dir="$work/cab"
+  mkdir -p "$cab_dir"
+  if [ "$cab_extractor" = "cabextract" ]; then
+    cabextract -q -d "$cab_dir" "$WEBVIEW2_CAB"
+  else
+    "$cab_extractor" "$(cygpath -w "$WEBVIEW2_CAB")" -F:* "$(cygpath -w "$cab_dir")" >/dev/null
+  fi
+  # The cab holds one top-level Microsoft.WebView2.FixedVersionRuntime.<ver>.x64
+  # folder. Ship its contents as webview2/, where the app looks for them.
+  runtime_exe="$(find "$cab_dir" -name msedgewebview2.exe -type f | head -n 1)"
+  [ -n "$runtime_exe" ] || { echo "FATAL: no msedgewebview2.exe inside $WEBVIEW2_CAB" >&2; exit 1; }
+  mv "$(dirname "$runtime_exe")" "$stage/webview2"
+  rm -rf "$cab_dir"
+  echo "    runtime unpacked ($(find "$stage/webview2" -type f | wc -l | tr -d ' ') files)"
+else
+  echo "WARN: WEBVIEW2_CAB is not set. The desktop app will only start on targets"
+  echo "      that already have the WebView2 runtime; the terminal client is unaffected."
+fi
+
+cp "$here/install.ps1" "$stage/install.ps1"
+cp "$here/README.md"   "$stage/README.md"
 
 echo "==> Writing SHA256SUMS"
-( cd "$work" && shasum -a 256 claude.exe claude-vllm.exe install.ps1 README.md > SHA256SUMS )
+# Every file in the bundle, the WebView2 runtime included, so install.ps1's
+# check covers all of it. Paths use forward slashes; PowerShell accepts both.
+( cd "$stage" && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort \
+    | while IFS= read -r f; do shasum -a 256 "$f"; done > SHA256SUMS )
 
 mkdir -p "$out"
 bundle="$out/claude-vllm-airgap-$VERSION.zip"
 tmp_bundle="$out/.claude-vllm-airgap-$VERSION.zip.tmp"
 rm -f "$tmp_bundle"
-( cd "$work" && zip -q -r "$tmp_bundle" claude.exe claude-vllm.exe install.ps1 README.md SHA256SUMS )
+( cd "$stage" && zip -q -r "$tmp_bundle" . )
 mv "$tmp_bundle" "$bundle"
 
 echo
@@ -113,3 +194,4 @@ echo "Bundle ready: $bundle"
 shasum -a 256 "$bundle"
 echo
 echo "Transfer it to the air-gapped machine, then run install.ps1 from PowerShell."
+[ -n "$WEBVIEW2_CAB" ] || echo "(No WebView2 runtime bundled: see WEBVIEW2_CAB at the top of this script.)"

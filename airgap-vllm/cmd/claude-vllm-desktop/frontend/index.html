@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude vLLM Desktop</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Claude vLLM</span>
+      </div>
+
+      <button id="folder-btn" class="folder" title="Choose project folder">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2h9A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+        <span id="folder-label">Choose a project folder…</span>
+      </button>
+
+      <button id="new-chat" class="primary wide" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        New chat
+      </button>
+
+      <div class="section-label">History</div>
+      <nav id="history" aria-label="Session history"></nav>
+
+      <div class="sidebar-foot">
+        <button id="settings-btn" class="ghost wide">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          Settings
+        </button>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="topbar">
+        <div id="chips">
+          <span id="chip-model" class="chip" hidden></span>
+          <span id="chip-lane" class="chip subtle" hidden></span>
+        </div>
+        <label class="mode-picker">
+          <span>Permissions</span>
+          <select id="perm-mode">
+            <option value="manual">Ask before tools</option>
+            <option value="acceptEdits">Auto-accept edits</option>
+            <option value="plan">Plan only</option>
+          </select>
+        </label>
+      </header>
+
+      <section id="transcript" aria-live="polite">
+        <div id="empty" class="empty">
+          <h1>Claude Code, on your own model</h1>
+          <p>Choose a project folder to start. Everything runs on this machine and your vLLM server; nothing leaves the network.</p>
+        </div>
+      </section>
+
+      <footer id="composer">
+        <div class="composer-box">
+          <textarea id="input" rows="1" placeholder="Choose a project folder to start" disabled></textarea>
+          <button id="send" class="primary icon" title="Send (Enter)" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+          <button id="stop" class="danger icon" title="Stop" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+          </button>
+        </div>
+        <div class="hint">Enter to send · Shift+Enter for a new line</div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Permission prompt -->
+  <div id="perm-modal" class="modal" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="perm-title">
+      <h2 id="perm-title">Allow this tool call?</h2>
+      <div id="perm-summary" class="perm-summary"></div>
+      <div id="perm-detail" class="perm-detail"></div>
+      <div class="actions">
+        <button id="perm-deny" class="ghost">Deny <kbd>Esc</kbd></button>
+        <button id="perm-always" class="ghost">Allow <span id="perm-tool-name"></span> for this chat</button>
+        <button id="perm-allow" class="primary">Allow <kbd>Enter</kbd></button>
+      </div>
+      <div id="perm-queue" class="queue-note"></div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div id="settings-modal" class="modal" hidden>
+    <div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h2 id="settings-title">Settings</h2>
+      <div id="settings-problem" class="notice error" hidden></div>
+      <form id="settings-form" autocomplete="off">
+        <label>vLLM base URL
+          <input name="vllm_url" placeholder="http://10.0.0.5:8000" required>
+        </label>
+        <label>API key
+          <input name="api_key" type="password" placeholder="blank if none">
+          <span class="field-note" id="key-note"></span>
+        </label>
+        <label>Model
+          <span class="row">
+            <select name="model" id="model-select"></select>
+            <button type="button" id="refresh-models" class="ghost">Fetch models</button>
+          </span>
+        </label>
+        <div class="grid">
+          <label>Mode
+            <select name="mode">
+              <option value="auto">auto</option>
+              <option value="messages">messages (native)</option>
+              <option value="openai">openai (translate)</option>
+            </select>
+          </label>
+          <label>Log
+            <select name="log">
+              <option value="off">off</option>
+              <option value="requests">requests</option>
+              <option value="full">full</option>
+            </select>
+          </label>
+          <label>Max output tokens
+            <input name="max_tokens" type="number" min="1">
+          </label>
+          <label>Context window
+            <input name="context_window" type="number" min="1">
+          </label>
+        </div>
+        <div class="field-note" id="log-dir"></div>
+        <div class="actions">
+          <button type="button" id="run-doctor" class="ghost">Run doctor</button>
+          <span class="spacer"></span>
+          <button type="button" id="settings-cancel" class="ghost">Close</button>
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+      <pre id="doctor-out" class="doctor" hidden></pre>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="md.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

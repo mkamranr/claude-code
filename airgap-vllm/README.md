@@ -21,6 +21,22 @@ otherwise it translates to and from the OpenAI chat completions API.
 the same bridge and runs the same `claude.exe`, headless, rendering its event
 stream in a chat window. See [Desktop app](#desktop-app).
 
+## Prebuilt bundle
+
+A ready-made bundle (Claude Code 2.1.252, with the desktop app and the WebView2
+runtime) is attached to the
+[`airgap-2.1.252` release](https://github.com/mkamranr/claude-code-airgap/releases/tag/airgap-2.1.252):
+[`claude-vllm-airgap-2.1.252.zip`](https://github.com/mkamranr/claude-code-airgap/releases/download/airgap-2.1.252/claude-vllm-airgap-2.1.252.zip),
+about 420 MB, SHA256
+`8d093a0e8547e23c7c1f414d65aef768c77df5f5db12e922b7dc4e7eb0201d5f`.
+
+Check that hash before carrying the zip across (`Get-FileHash` in PowerShell,
+`shasum -a 256` elsewhere), then skip to
+[On the air-gapped machine](#on-the-air-gapped-machine). `claude.exe` and the
+runtime are Authenticode-signed and `install.ps1` checks them again, but the
+two `claude-vllm*` exes are not signed, so the hash is what vouches for them.
+To produce the bundle yourself instead, follow the next section.
+
 ## On a connected machine
 
 Requires `curl`, `gpg`, `shasum`, `zip`, `go` (1.26 or newer), and `python3`

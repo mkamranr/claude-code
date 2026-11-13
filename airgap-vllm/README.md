@@ -48,7 +48,8 @@ runtime, and writes `dist/claude-vllm-airgap-2.1.252.zip` containing
 `install.ps1`, `README.md`, and a `SHA256SUMS` covering every file. It aborts
 rather than emitting an unverified bundle.
 
-Without `WEBVIEW2_CAB` the bundle is about 180 MB smaller and the desktop app
+The runtime dominates the bundle: with WebView2 157 it is about 420 MB,
+against about 100 MB without (the cab itself is about 310 MB). Without `WEBVIEW2_CAB` the desktop app
 starts only on targets that already have WebView2. Offline Windows 10 machines
 that never received it through Windows Update (the 1909 target included) do
 not have it. The terminal client never needs it.

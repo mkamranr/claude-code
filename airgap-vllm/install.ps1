@@ -19,16 +19,42 @@
   outright rather than letting it time out and continue (see the note printed
   by Assert-Signature below).
   The SHA256 check in Assert-Checksums still runs either way.
+.PARAMETER Uninstall
+  Remove what this script installed: the three executables, the webview2
+  folder and the Start Menu shortcut. Settings in %USERPROFILE%\.claude-vllm
+  and Claude Code's data in %USERPROFILE%\.claude are kept, and so is the PATH
+  entry, since other tools may install to the same directory.
 #>
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:USERPROFILE ".local\bin"),
     [switch]$SkipSignatureCheck,
-    [switch]$NoShortcut
+    [switch]$NoShortcut,
+    [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
 $source = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+if ($Uninstall) {
+    if (Get-Process claude-vllm-desktop -ErrorAction SilentlyContinue) {
+        throw "Claude vLLM Desktop is running. Close it, then re-run install.ps1 -Uninstall."
+    }
+    Write-Host "==> Uninstalling from $InstallDir"
+    foreach ($exe in @("claude.exe", "claude-vllm.exe", "claude-vllm-desktop.exe")) {
+        $path = Join-Path $InstallDir $exe
+        if (Test-Path $path) { Remove-Item -Force $path; Write-Host "  removed $exe" }
+    }
+    $webview2Target = Join-Path $InstallDir "webview2"
+    if (Test-Path $webview2Target) { Remove-Item -Recurse -Force $webview2Target; Write-Host "  removed webview2 runtime" }
+    $lnk = Join-Path ([Environment]::GetFolderPath("Programs")) "Claude vLLM Desktop.lnk"
+    if (Test-Path $lnk) { Remove-Item -Force $lnk; Write-Host "  removed Start Menu shortcut" }
+    Write-Host ""
+    Write-Host "Uninstalled." -ForegroundColor Green
+    Write-Host "Kept: settings in $env:USERPROFILE\.claude-vllm, Claude Code's data in $env:USERPROFILE\.claude,"
+    Write-Host "and the $InstallDir entry on your user PATH. Remove them by hand if you no longer need them."
+    return
+}
 
 function Assert-Checksums {
     $manifest = Join-Path $source "SHA256SUMS"

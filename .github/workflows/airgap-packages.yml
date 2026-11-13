@@ -4,8 +4,10 @@ name: Air-gap packages
 # one on a runner of its own platform, and publishes them to a GitHub release.
 #
 #   push / pull request touching airgap-vllm/   test, build, smoke-test
-#   push a tag airgap-<version>                 ... and publish that release
-#   Actions > Air-gap packages > Run workflow   choose the version, optionally publish
+#   push a tag airgap-<version>                 ... and create that release if it does
+#                                               not exist yet (an existing one is left alone)
+#   Actions > Air-gap packages > Run workflow   choose the version; "publish" creates the
+#                                               release or replaces its files
 
 on:
   push:
@@ -235,6 +237,15 @@ jobs:
         run: |
           tag="airgap-$VERSION"
           if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A pushed tag only ever creates a release. Re-pointing the tag of
+            # an existing release must not swap its files: every build has new
+            # hashes, which would silently invalidate the ones already
+            # published in the notes and the README. Replacing files is a
+            # deliberate act: a manual run with "publish" ticked.
+            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+              echo "::notice::Release $tag already exists; left unchanged. To replace its files, run this workflow manually with publish ticked."
+              exit 0
+            fi
             # Keep the existing, hand-edited notes; replace only the files.
             gh release upload "$tag" dist/* --clobber -R "$GITHUB_REPOSITORY"
           else

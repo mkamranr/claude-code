@@ -54,10 +54,10 @@ Get the packages from the [latest release](https://github.com/mkamranr/claude-co
 <summary><b>SHA256 checksums</b>: verify before you carry a package across</summary>
 
 ```
-e5f5a9d671a9726cd6c5c36c568d6453aacdfa0e4659ca6df58ad8c57eec0132  claude-vllm-airgap-2.1.252-windows-x64.zip
-4196d4626e0180df1621b826550b06b43dfe7d7e5a3bbf251b17eb82632f0f8d  claude-vllm-airgap-2.1.252-linux-x64.tar.gz
-fef88f21bf9cda89962d0ae2b5734812a75f99b30158fcb3f17b6278c65878e9  claude-vllm-airgap-2.1.252-macos-arm64.tar.gz
-8b6c25c19431e64916bf27e9084e9ef3f5573323dc2217214ce5e865f44992c8  claude-vllm-airgap-2.1.252-macos-x64.tar.gz
+e5674871f67445cf530c3442b14d7d9b4808858c89b96769b13d2033ec84f138  claude-vllm-airgap-2.1.252-windows-x64.zip
+1bc9c3ccf23ce6e47197c10e9cb5012a50b9ba53dde5a51aed5b8b4a4f9a13e3  claude-vllm-airgap-2.1.252-linux-x64.tar.gz
+78d172a81e4f1c1e30aa7686adf83d11cc65b00148706806489a85c9b38e2a0b  claude-vllm-airgap-2.1.252-macos-arm64.tar.gz
+0a2422b53be7e20efc8cb773a238054fd5edb767bd468695742c1594e9db0e91  claude-vllm-airgap-2.1.252-macos-x64.tar.gz
 ```
 
 Each package also has a `.sha256` file beside it in the release. Carry the hash to

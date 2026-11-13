@@ -1,0 +1,255 @@
+name: Air-gap packages
+
+# Builds the offline packages with airgap-vllm/scripts/stage.sh, installs each
+# one on a runner of its own platform, and publishes them to a GitHub release.
+#
+#   push / pull request touching airgap-vllm/   test, build, smoke-test
+#   push a tag airgap-<version>                 ... and publish that release
+#   Actions > Air-gap packages > Run workflow   choose the version, optionally publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["airgap-*"]
+    paths:
+      - "airgap-vllm/**"
+      - ".github/workflows/airgap-packages.yml"
+  pull_request:
+    paths:
+      - "airgap-vllm/**"
+      - ".github/workflows/airgap-packages.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Claude Code version to package"
+        default: "2.1.252"
+        required: true
+      publish:
+        description: "Publish to the airgap-<version> release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airgap-packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DEFAULT_CLAUDE_CODE_VERSION: "2.1.252"
+  # Microsoft's WebView2 Fixed Version runtime for the Windows desktop app.
+  # The download URL is versioned. To move to a newer runtime, take the x64
+  # "Fixed Version" link from https://developer.microsoft.com/microsoft-edge/webview2/
+  # and update both values; the build refuses a cab whose hash does not match.
+  WEBVIEW2_CAB_URL: "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/edb19202-9173-4dd1-ab87-c45c2d80aaec/Microsoft.WebView2.FixedVersionRuntime.157.0.4341.46.x64.cab"
+  WEBVIEW2_CAB_SHA256: "0ac7317a08c3f3beebbb9b6d90f5b77352569f0a33a54a15ef6aaabc82899b7c"
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: airgap-vllm
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: airgap-vllm/go.mod
+          cache-dependency-path: airgap-vllm/go.sum
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "gofmt needed:"; echo "$unformatted"; exit 1; fi
+      - run: go vet ./...
+      - run: go test ./...
+
+  package:
+    name: Build packages
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: airgap-vllm/go.mod
+          cache-dependency-path: airgap-vllm/go.sum
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            v="${GITHUB_REF_NAME#airgap-}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            v="$INPUT_VERSION"
+          else
+            v="$DEFAULT_CLAUDE_CODE_VERSION"
+          fi
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::invalid version '$v'"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install cabextract
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cabextract
+
+      - name: Cache the WebView2 cab
+        id: cab
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/webview2.cab
+          key: webview2-cab-${{ env.WEBVIEW2_CAB_SHA256 }}
+
+      - name: Download the WebView2 cab
+        if: steps.cab.outputs.cache-hit != 'true'
+        run: curl -fsSL --retry 3 -o "$RUNNER_TEMP/webview2.cab" "$WEBVIEW2_CAB_URL"
+
+      - name: Build
+        working-directory: airgap-vllm
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          WEBVIEW2_CAB="$RUNNER_TEMP/webview2.cab" ./scripts/stage.sh "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airgap-packages
+          path: airgap-vllm/dist/claude-vllm-airgap-*
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+  smoke-unix:
+    name: Install (${{ matrix.package }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: linux-x64
+            os: ubuntu-latest
+          - package: macos-arm64
+            os: macos-latest
+          - package: macos-x64
+            os: macos-latest   # Apple silicon runner: exercises the Rosetta path
+    runs-on: ${{ matrix.os }}
+    env:
+      PKG: claude-vllm-airgap-${{ needs.package.outputs.version }}-${{ matrix.package }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: airgap-packages
+      - name: Check the package hash
+        run: shasum -a 256 -c "$PKG.tar.gz.sha256"
+      - name: Install
+        run: |
+          tar -xzf "$PKG.tar.gz"
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          "./$PKG/install.sh" | tee install.log
+          # The signature checks must have run, not been skipped.
+          grep -qE "claude matches the signed manifest|signed by Developer ID Application: Anthropic PBC" install.log
+      - name: Run the installed binaries
+        run: |
+          export HOME="$RUNNER_TEMP/home" DISABLE_AUTOUPDATER=1
+          bin="$HOME/.local/bin"
+          if [ "${{ matrix.package }}" = "macos-x64" ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "Rosetta 2 is not installed on this runner; skipping execution of the x64 binaries."
+            exit 0
+          fi
+          "$bin/claude" --version
+          "$bin/claude-vllm" config show
+      - name: Reject a tampered package
+        run: |
+          export HOME="$RUNNER_TEMP/home2"
+          mkdir -p "$HOME"
+          printf x >> "$PKG/claude"
+          if "./$PKG/install.sh" --no-modify-path; then echo "::error::tampered claude was accepted"; exit 1; fi
+      - name: Uninstall
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          "./$PKG/install.sh" --uninstall
+          [ ! -e "$HOME/.local/bin/claude" ] && [ ! -e "$HOME/.local/bin/claude-vllm" ]
+          ! grep -q "claude-vllm >>>" "$HOME"/.bashrc "$HOME"/.zshrc "$HOME"/.profile 2>/dev/null
+
+  smoke-windows:
+    name: Install (windows-x64)
+    needs: package
+    runs-on: windows-latest
+    env:
+      PKG: claude-vllm-airgap-${{ needs.package.outputs.version }}-windows-x64
+    defaults:
+      run:
+        shell: powershell   # Windows PowerShell 5.1, as on the target
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: airgap-packages
+      - name: Check the package hash
+        run: |
+          $expected = (Get-Content "$env:PKG.zip.sha256").Split(" ")[0]
+          $actual = (Get-FileHash "$env:PKG.zip").Hash.ToLower()
+          if ($actual -ne $expected) { throw "hash mismatch: $actual" }
+      - name: Install
+        run: |
+          Expand-Archive "$env:PKG.zip" -DestinationPath pkg
+          .\pkg\install.ps1 -NoShortcut -InstallDir "$env:RUNNER_TEMP\bin"
+      - name: Run the installed binaries
+        run: |
+          $env:DISABLE_AUTOUPDATER = "1"
+          & "$env:RUNNER_TEMP\bin\claude.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "claude.exe --version failed" }
+          & "$env:RUNNER_TEMP\bin\claude-vllm.exe" config show
+          if ($LASTEXITCODE -ne 0) { throw "claude-vllm.exe config show failed" }
+          if (-not (Test-Path "$env:RUNNER_TEMP\bin\webview2\msedgewebview2.exe")) { throw "webview2 runtime not installed" }
+      - name: Uninstall
+        run: |
+          .\pkg\install.ps1 -Uninstall -InstallDir "$env:RUNNER_TEMP\bin"
+          if (Test-Path "$env:RUNNER_TEMP\bin\claude.exe") { throw "claude.exe left behind" }
+
+  release:
+    name: Publish release
+    needs: [package, smoke-unix, smoke-windows]
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.package.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: airgap-packages
+          path: dist
+      - name: Create or update the release
+        run: |
+          tag="airgap-$VERSION"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Keep the existing, hand-edited notes; replace only the files.
+            gh release upload "$tag" dist/* --clobber -R "$GITHUB_REPOSITORY"
+          else
+            {
+              echo "Offline packages for running Claude Code $VERSION against a self-hosted vLLM on air-gapped machines."
+              echo
+              echo "**SHA256**"
+              echo '```'
+              cat dist/*.sha256
+              echo '```'
+              echo
+              echo "Check the hash before carrying a package across, and again on the target. Install instructions are in the repository README and in \`README.md\` inside each package."
+              echo
+              echo "Claude Code is © Anthropic PBC and is used under Anthropic's terms. These packages redistribute the unmodified signed binaries. This project is not affiliated with Anthropic."
+            } > notes.md
+            gh release create "$tag" dist/* -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Air-gap packages: Claude Code $VERSION (Windows, Linux, macOS)" --notes-file notes.md
+          fi

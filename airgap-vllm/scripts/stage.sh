@@ -8,12 +8,15 @@
 #   claude-vllm-airgap-<ver>-windows-x64.zip     claude.exe, the bridge, the
 #                                                desktop app, install.ps1
 #   claude-vllm-airgap-<ver>-linux-x64.tar.gz    claude, the bridge, install.sh
+#   claude-vllm-airgap-<ver>-macos-arm64.tar.gz  the same, for Apple silicon
+#   claude-vllm-airgap-<ver>-macos-x64.tar.gz    the same, for Intel Macs
 #
 # each with a SHA256SUMS inside and a .sha256 file beside it. Aborts on any
 # verification failure rather than shipping an unverified artifact.
 #
-#   PLATFORMS="windows linux"   # default; set to one of them to build only that
-#   LINUX_PLATFORM=linux-x64    # or linux-x64-musl for musl distributions
+#   PLATFORMS="windows linux macos"  # default; list a subset to build only those
+#   LINUX_PLATFORM=linux-x64         # or linux-x64-musl for musl distributions
+#   MACOS_ARCHS="arm64 x64"          # default; list one to build only that
 #
 # Desktop app runtime (optional, but needed on targets without WebView2, which
 # includes offline Windows 10 machines that never got it from Windows Update):
@@ -32,7 +35,8 @@ if ! [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "FATAL: invalid version string: $VERSION" >&2
   exit 1
 fi
-PLATFORMS="${PLATFORMS:-windows linux}"
+PLATFORMS="${PLATFORMS:-windows linux macos}"
+MACOS_ARCHS="${MACOS_ARCHS:-arm64 x64}"
 LINUX_PLATFORM="${LINUX_PLATFORM:-linux-x64}"
 case "$LINUX_PLATFORM" in
   linux-x64|linux-x64-musl) ;;
@@ -40,8 +44,14 @@ case "$LINUX_PLATFORM" in
 esac
 for p in $PLATFORMS; do
   case "$p" in
-    windows|linux) ;;
-    *) echo "FATAL: unknown platform in PLATFORMS: $p (use windows and/or linux)" >&2; exit 1 ;;
+    windows|linux|macos) ;;
+    *) echo "FATAL: unknown platform in PLATFORMS: $p (use windows, linux, macos)" >&2; exit 1 ;;
+  esac
+done
+for a in $MACOS_ARCHS; do
+  case "$a" in
+    arm64|x64) ;;
+    *) echo "FATAL: unknown arch in MACOS_ARCHS: $a (use arm64 and/or x64)" >&2; exit 1 ;;
   esac
 done
 want() { [[ " $PLATFORMS " == *" $1 "* ]]; }
@@ -228,28 +238,36 @@ if want windows; then
   publish "$work/$name" "$name"
 fi
 
-if want linux; then
-  top="claude-vllm-airgap-$VERSION-linux-x64"
-  stage="$work/linux/$top"
+# build_unix <manifest-platform> <goos> <goarch> <label>
+# One terminal-only package for Linux or macOS: claude, the bridge, install.sh.
+build_unix() {
+  local platform="$1" goos="$2" goarch="$3" label="$4"
+  local top="claude-vllm-airgap-$VERSION-$label"
+  local root="$work/$label"
+  local stage="$root/$top"
   mkdir -p "$stage/release"
-  fetch_claude "$LINUX_PLATFORM" claude "$stage"
+  fetch_claude "$platform" claude "$stage"
 
-  echo "==> Cross-compiling the bridge for linux/amd64"
-  ( cd "$here" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-      go build -trimpath -ldflags "-s -w" -o "$stage/claude-vllm" ./cmd/claude-vllm )
+  echo "==> Cross-compiling the bridge for $goos/$goarch"
+  # On darwin/arm64 the Go linker ad-hoc signs the binary itself, which is
+  # all Apple silicon requires to run it.
+  ( cd "$here" && CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch"       go build -trimpath -ldflags "-s -w" -o "$stage/claude-vllm" ./cmd/claude-vllm )
 
-  # Linux has no Authenticode, so the signed manifest and the key travel with
-  # the bundle and install.sh re-checks claude against them offline.
+  # The signed manifest and key travel with the bundle so install.sh can
+  # re-check claude against them offline; release/platform tells install.sh
+  # which machine the bundle is for.
   cp "$work/manifest.json" "$work/manifest.json.sig" "$work/claude-code.asc" "$stage/release/"
+  printf '%s
+' "$platform" > "$stage/release/platform"
   cp "$here/install.sh" "$stage/install.sh"
   cp "$here/README.md"  "$stage/README.md"
-  echo "==> Writing SHA256SUMS (linux)"
+  echo "==> Writing SHA256SUMS ($label)"
   write_sums "$stage"
 
   # Built with Python's tarfile rather than tar so the executable bits are set
   # explicitly: a Windows build host has no POSIX modes to carry over.
-  name="$top.tar.gz"
-  python3 - "$work/linux" "$top" "$work/$name" <<'PY'
+  local name="$top.tar.gz"
+  python3 - "$root" "$top" "$work/$name" <<'PY'
 import os, sys, tarfile
 root, top, dest = sys.argv[1:]
 executable = {"claude", "claude-vllm", "install.sh"}
@@ -275,6 +293,20 @@ with tarfile.open(dest, "w:gz") as tar:
             add(tar, os.path.relpath(os.path.join(dirpath, fn), root))
 PY
   publish "$work/$name" "$name"
+  rm -rf "$root"
+}
+
+if want linux; then
+  build_unix "$LINUX_PLATFORM" linux amd64 linux-x64
+fi
+
+if want macos; then
+  for a in $MACOS_ARCHS; do
+    case "$a" in
+      arm64) build_unix darwin-arm64 darwin arm64 macos-arm64 ;;
+      x64)   build_unix darwin-x64   darwin amd64 macos-x64 ;;
+    esac
+  done
 fi
 
 echo
@@ -283,4 +315,4 @@ for b in "${built[@]}"; do
   printf '  %s\n    sha256 %s\n' "$(basename "$b")" "$(cut -d' ' -f1 < "$b.sha256")"
 done
 echo
-echo "Transfer to the air-gapped machine and run install.ps1 (Windows) or install.sh (Linux)."
+echo "Transfer to the air-gapped machine and run install.ps1 (Windows) or install.sh (Linux, macOS)."

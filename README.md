@@ -3,11 +3,11 @@
 # Claude Code Air-Gap
 
 **Run Claude Code fully offline, against your own vLLM server.**
-No internet, no sign-in, no cloud. Windows and Linux.
+No internet, no sign-in, no cloud. Windows, Linux and macOS.
 
 [![Release](https://img.shields.io/github/v/release/mkamranr/claude-code-airgap?label=release&color=2ea44f)](https://github.com/mkamranr/claude-code-airgap/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mkamranr/claude-code-airgap/total?color=blue)](https://github.com/mkamranr/claude-code-airgap/releases)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20x64%20%7C%20Linux%20x64-informational)](#downloads)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-informational)](#downloads)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-2.1.252-d97757)](https://code.claude.com/docs/en/overview)
 [![Go](https://img.shields.io/github/go-mod/go-version/mkamranr/claude-code-airgap?filename=airgap-vllm%2Fgo.mod)](airgap-vllm/go.mod)
 
@@ -31,10 +31,10 @@ with no network at all.
 
 - **Fully offline:** no sign-in, telemetry, auto-update or outbound traffic. The bridge binds to `127.0.0.1` only.
 - **Unmodified Claude Code:** Anthropic's signed binary, connected through the documented `ANTHROPIC_BASE_URL` setting.
-- **Two packages:** Windows x64 (`.zip` with a native PowerShell installer) and Linux x64 (`.tar.gz` with a bash installer).
+- **Packages for each platform:** Windows x64 (`.zip` with a native PowerShell installer), and Linux x64, macOS Apple silicon and macOS Intel (`.tar.gz` with a bash installer).
 - **Desktop app (Windows):** Claude Code in a window, with streamed replies, inline diffs, per-tool approve/deny, Stop and resume, and session history.
 - **Works with any vLLM build:** native Anthropic passthrough where vLLM supports it, automatic translation to the OpenAI API where it doesn't.
-- **Verified end to end:** GPG and SHA256 when the package is built, and checksums plus signatures re-checked on the target.
+- **Verified end to end:** GPG and SHA256 when the package is built. On the target, checksums are re-checked along with each platform's own signature check: Authenticode on Windows, Apple Developer ID on macOS, Anthropic's GPG-signed manifest on Linux.
 - **No admin or root needed:** both installers write only to your user profile.
 - **Built-in diagnostics:** `claude-vllm doctor` checks connectivity, model, context window and live tool calling.
 
@@ -46,13 +46,17 @@ Get the packages from the [latest release](https://github.com/mkamranr/claude-co
 |---|---|---|---|
 | [`claude-vllm-airgap-2.1.252-windows-x64.zip`](https://github.com/mkamranr/claude-code-airgap/releases/latest/download/claude-vllm-airgap-2.1.252-windows-x64.zip) | Windows 10 / 11, x64 | ~420 MB | Claude Code, bridge, desktop app, WebView2 runtime, `install.ps1` |
 | [`claude-vllm-airgap-2.1.252-linux-x64.tar.gz`](https://github.com/mkamranr/claude-code-airgap/releases/latest/download/claude-vllm-airgap-2.1.252-linux-x64.tar.gz) | Linux x64, glibc | ~100 MB | Claude Code, bridge, signed release manifest, `install.sh` |
+| [`claude-vllm-airgap-2.1.252-macos-arm64.tar.gz`](https://github.com/mkamranr/claude-code-airgap/releases/latest/download/claude-vllm-airgap-2.1.252-macos-arm64.tar.gz) | macOS, Apple silicon | ~90 MB | Claude Code, bridge, signed release manifest, `install.sh` |
+| [`claude-vllm-airgap-2.1.252-macos-x64.tar.gz`](https://github.com/mkamranr/claude-code-airgap/releases/latest/download/claude-vllm-airgap-2.1.252-macos-x64.tar.gz) | macOS, Intel | ~90 MB | Claude Code, bridge, signed release manifest, `install.sh` |
 
 <details>
 <summary><b>SHA256 checksums</b>: verify before you carry a package across</summary>
 
 ```
-1be1d5c4cd085bdaf6b329de63b6fb4adc387f7540013dac9263041bed63cbe5  claude-vllm-airgap-2.1.252-windows-x64.zip
-1880e5e378c2ac9dd27491fd4f53fcf328922ee964be1178a8596dcd9bbf3736  claude-vllm-airgap-2.1.252-linux-x64.tar.gz
+e5f5a9d671a9726cd6c5c36c568d6453aacdfa0e4659ca6df58ad8c57eec0132  claude-vllm-airgap-2.1.252-windows-x64.zip
+4196d4626e0180df1621b826550b06b43dfe7d7e5a3bbf251b17eb82632f0f8d  claude-vllm-airgap-2.1.252-linux-x64.tar.gz
+fef88f21bf9cda89962d0ae2b5734812a75f99b30158fcb3f17b6278c65878e9  claude-vllm-airgap-2.1.252-macos-arm64.tar.gz
+8b6c25c19431e64916bf27e9084e9ef3f5573323dc2217214ce5e865f44992c8  claude-vllm-airgap-2.1.252-macos-x64.tar.gz
 ```
 
 Each package also has a `.sha256` file beside it in the release. Carry the hash to
@@ -100,6 +104,18 @@ claude-vllm doctor
 claude-vllm
 ```
 
+### macOS
+
+Use `macos-arm64` on Apple silicon and `macos-x64` on Intel Macs. In Terminal:
+
+```bash
+tar -xzf claude-vllm-airgap-2.1.252-macos-arm64.tar.gz
+cd claude-vllm-airgap-2.1.252-macos-arm64
+./install.sh               # verifies checksums and Anthropic's Apple signature, installs, adds to PATH
+```
+
+Then the same `claude-vllm setup`, `doctor` and `claude-vllm` in a new terminal.
+
 ### Your vLLM server
 
 Claude Code relies heavily on tools, so start vLLM with automatic tool choice and the
@@ -146,8 +162,9 @@ behind a per-session token.
 
 | Check | When the package is built | On the target |
 |---|---|---|
-| Release manifest signed by Anthropic (`31DD DE24 … 1A7E CACE`) | ✓ GPG `VALIDSIG` | ✓ Linux, when `gpg` is installed |
-| Claude Code binary matches the signed manifest | ✓ | ✓ Linux |
+| Release manifest signed by Anthropic (`31DD DE24 … 1A7E CACE`) | ✓ GPG `VALIDSIG` | ✓ Linux and macOS, when `gpg` is installed |
+| Claude Code binary matches the signed manifest | ✓ | ✓ Linux and macOS, when `gpg` is installed |
+| Apple Developer ID: Anthropic PBC (Team `Q6L2SF6YDW`) | | ✓ macOS |
 | Authenticode signatures (Anthropic, Microsoft WebView2) | | ✓ Windows |
 | Every file matches the in-package `SHA256SUMS` | written | ✓ both |
 | Package matches its published SHA256 | you, before transfer | you, after transfer |
@@ -196,7 +213,7 @@ WEBVIEW2_CAB=/path/to/Microsoft.WebView2.FixedVersionRuntime.<ver>.x64.cab \
 
 This verifies the release, cross-compiles everything and writes both packages to
 `airgap-vllm/dist/`. If any check fails, it stops without producing a package.
-`PLATFORMS=linux` or `PLATFORMS=windows` builds just one. The
+`PLATFORMS="linux macos"`, for example, builds a subset. The
 [runbook](airgap-vllm/README.md#building-it-yourself) lists every option.
 
 ```
@@ -214,7 +231,7 @@ airgap-vllm/
 ├── internal/fakevllm/          in-process vLLM test double
 ├── scripts/stage.sh            builds the verified packages
 ├── install.ps1                 Windows installer
-└── install.sh                  Linux installer
+└── install.sh                  Linux and macOS installer
 ```
 
 `claude-vllm` links no third-party code and builds offline with an empty module
@@ -223,8 +240,8 @@ cache. The desktop app adds one dependency, [Wails v2](https://wails.io).
 ## Status
 
 - **Tests:** `go test`, `go vet` and `gofmt` pass on all 9 packages.
-- **Build:** both packages built from the live release with every verification
-  step.
+- **Build:** all four packages built from the live release with every
+  verification step.
 - **Windows:**
   - `install.ps1` tested against the package.
   - The desktop app driven end to end against `claude.exe` 2.1.252 and a stand-in
@@ -233,11 +250,19 @@ cache. The desktop app adds one dependency, [Wails v2](https://wails.io).
   - `install.sh` tested for install, reinstall, uninstall and rejection of tampered
     files, keys and manifests.
   - Not yet run on a real Linux host.
+- **macOS:**
+  - `install.sh` tested with stand-in `uname`, `codesign` and `xattr`:
+    signature pinning, quarantine removal, the zsh PATH setup and refusal of
+    the wrong architecture.
+  - Anthropic's Developer ID (Team `Q6L2SF6YDW`) read from the binaries'
+    signatures.
+  - The arm64 bridge confirmed to carry Go's ad-hoc signature.
+  - Not yet run on a real Mac.
 
 **Your acceptance checks**, since they need your environment:
 
 1. `claude-vllm doctor`'s tool-calling test against your model.
-2. The Linux package on a real Linux host.
+2. The Linux and macOS packages on real hosts.
 3. The desktop app on your air-gapped Windows machine.
 
 ## Credit and license

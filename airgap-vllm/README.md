@@ -1,8 +1,8 @@
 # Claude Code on a self-hosted vLLM — operator runbook
 
 Run Claude Code against an internally hosted [vLLM](https://github.com/vllm-project/vllm)
-server on a **Windows x64** or **Linux x64** machine with no internet access and
-no sign-in.
+server on a **Windows**, **Linux** or **macOS** machine with no internet access
+and no sign-in.
 
 **Contents:**
 [How it works](#how-it-works) ·
@@ -10,6 +10,7 @@ no sign-in.
 [Getting a bundle](#getting-a-bundle) ·
 [Install on Windows](#install-on-windows) ·
 [Install on Linux](#install-on-linux) ·
+[Install on macOS](#install-on-macos) ·
 [What is verified, and where](#what-is-verified-and-where) ·
 [Configuration](#configuration) ·
 [Commands](#commands) ·
@@ -44,11 +45,14 @@ rendering its event stream as a chat. See [Desktop app](#desktop-app-windows).
 |---|---|---|
 | `claude-vllm-airgap-<ver>-windows-x64.zip` | `claude.exe`, `claude-vllm.exe`, `claude-vllm-desktop.exe`, `webview2\` (Microsoft's WebView2 runtime, needed by the desktop app), `SHA256SUMS` | `install.ps1` (PowerShell 5.1+, no admin) |
 | `claude-vllm-airgap-<ver>-linux-x64.tar.gz` | `claude`, `claude-vllm`, `release/` (Anthropic's signed release manifest and key), `SHA256SUMS` | `install.sh` (bash, no root) |
+| `claude-vllm-airgap-<ver>-macos-arm64.tar.gz` | The same, for Apple silicon Macs | `install.sh` (bash 3.2+, no admin) |
+| `claude-vllm-airgap-<ver>-macos-x64.tar.gz` | The same, for Intel Macs | `install.sh` |
 
 Each package also carries this README. `claude.exe` and `claude` are
 Anthropic's binaries, byte for byte; nothing in this project modifies them.
 
-The Linux package is terminal-only. The desktop app is Windows-only for now.
+The Linux and macOS packages are terminal-only. The desktop app is Windows-only
+for now.
 
 ## Getting a bundle
 
@@ -64,7 +68,8 @@ across:
 Get-FileHash .\claude-vllm-airgap-<ver>-windows-x64.zip      # Windows
 ```
 ```bash
-sha256sum -c claude-vllm-airgap-<ver>-linux-x64.tar.gz.sha256  # Linux
+sha256sum -c claude-vllm-airgap-<ver>-linux-x64.tar.gz.sha256      # Linux
+shasum -a 256 -c claude-vllm-airgap-<ver>-macos-arm64.tar.gz.sha256 # macOS
 ```
 
 Write the hash down and carry it separately from the package, then compare it
@@ -88,12 +93,12 @@ WEBVIEW2_CAB_SHA256=<optional: pin the cab you downloaded> \
 1. Imports Anthropic's release signing key into a throwaway keyring and checks
    its fingerprint, `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`.
 2. Verifies the release manifest's GPG signature against that key.
-3. Downloads `claude.exe` and the Linux `claude` and checks each against the
+3. Downloads Claude Code for each platform and checks each binary against the
    SHA256 in the signed manifest.
-4. Cross-compiles the bridge for both platforms, and the desktop app for
+4. Cross-compiles the bridge for every platform, and the desktop app for
    Windows.
 5. Unpacks the WebView2 runtime into the Windows package.
-6. Writes both packages to `dist/`, each with a `SHA256SUMS` inside and a
+6. Writes the packages to `dist/`, each with a `SHA256SUMS` inside and a
    `.sha256` file beside it.
 
 It aborts rather than emit an unverified package.
@@ -102,13 +107,14 @@ It aborts rather than emit an unverified package.
 |---|---|---|
 | `WEBVIEW2_CAB` | unset | Path to the WebView2 **Fixed Version** x64 `.cab` from Microsoft's WebView2 download page. Without it the desktop app starts only where WebView2 is already installed, which excludes offline Windows 10 machines that never got it from Windows Update. |
 | `WEBVIEW2_CAB_SHA256` | unset | Pins the cab you downloaded. |
-| `PLATFORMS` | `windows linux` | Build only one of them. |
+| `PLATFORMS` | `windows linux macos` | Build only a subset. |
 | `LINUX_PLATFORM` | `linux-x64` | `linux-x64-musl` for musl distributions such as Alpine. |
+| `MACOS_ARCHS` | `arm64 x64` | Build only one macOS architecture. |
 
 Unpacking the cab needs `cabextract` on Linux and macOS. Git Bash on Windows
 uses the built-in `expand.exe`. The WebView2 runtime dominates the Windows
-package: about 420 MB with it, about 100 MB without. The Linux package is
-about 100 MB.
+package: about 420 MB with it, about 100 MB without. The Linux and macOS
+packages are about 90–100 MB each.
 
 ## Install on Windows
 
@@ -168,18 +174,50 @@ It needs no network and no root.
 |---|---|
 | `--prefix DIR` | Install somewhere other than `~/.local/bin` |
 | `--no-modify-path` | Leave shell startup files alone |
-| `--skip-gpg` | Skip the release-signature check; the SHA256 check still runs |
+| `--skip-signature-check` | Skip the GPG and (on macOS) Apple signature checks; the SHA256 check still runs. `--skip-gpg` is an alias |
 | `--uninstall` | Remove what was installed |
 
 Requirements: x86_64 and glibc. For musl distributions, build the package with
 `LINUX_PLATFORM=linux-x64-musl`.
 
+## Install on macOS
+
+Pick `macos-arm64` for Apple silicon (M-series) Macs and `macos-x64` for Intel
+Macs. `uname -m` prints `arm64` or `x86_64`. Then, in Terminal:
+
+```bash
+tar -xzf claude-vllm-airgap-<ver>-macos-arm64.tar.gz
+cd claude-vllm-airgap-<ver>-macos-arm64
+./install.sh
+claude-vllm setup
+claude-vllm doctor
+claude-vllm
+```
+
+`install.sh` is the same script as on Linux, with these differences on macOS:
+
+- **Signature:** it verifies `claude`'s Apple code signature with `codesign`,
+  and requires it to be Anthropic's Developer ID (`Developer ID Application:
+  Anthropic PBC`, Team ID `Q6L2SF6YDW`). `codesign` is part of macOS, so this
+  check always runs. The GPG check also runs if you have `gpg`, which macOS
+  does not include.
+- **Quarantine:** it clears the `com.apple.quarantine` flag on the two
+  installed binaries, after their hashes have been verified. A
+  browser-downloaded archive passes that flag to everything extracted from it.
+  `claude` is notarized by Anthropic, but `claude-vllm` is not, so Gatekeeper
+  would otherwise block it.
+- **PATH:** it adds `~/.local/bin` to `~/.zshrc` (zsh is the default shell),
+  plus any existing `~/.bashrc`, `~/.bash_profile` or `~/.profile`.
+
+It needs no administrator rights, and the options are the same as on Linux.
+
 ## What is verified, and where
 
 | Check | On the connected machine | On the target |
 |---|---|---|
-| Release manifest signed by Anthropic's key (`31DD…CACE`) | `stage.sh` | `install.sh` (Linux, when `gpg` is present) |
-| `claude` / `claude.exe` matches the signed manifest | `stage.sh` | `install.sh` (Linux) |
+| Release manifest signed by Anthropic's key (`31DD…CACE`) | `stage.sh` | `install.sh`, when `gpg` is present |
+| `claude` / `claude.exe` matches the signed manifest | `stage.sh` | `install.sh`, when `gpg` is present |
+| Apple Developer ID: `claude` signed by Anthropic (Team `Q6L2SF6YDW`) | — | `install.sh` (macOS) |
 | Authenticode: `claude.exe` by Anthropic, WebView2 by Microsoft | — | `install.ps1` |
 | Every file matches `SHA256SUMS` | written by `stage.sh` | both installers |
 | The package matches its published SHA256 | you, before transfer | you, after transfer |
@@ -189,7 +227,8 @@ connected machine. The transfer across the air gap is exactly where corruption
 or tampering would happen.
 
 The bridge (`claude-vllm`) and the desktop app (`claude-vllm-desktop.exe`) are
-not code-signed. Their only in-package check is `SHA256SUMS`, which travels in
+not code-signed. On macOS the bridge carries only the ad-hoc signature that Go
+adds when it builds the binary, which identifies no publisher. Their only in-package check is `SHA256SUMS`, which travels in
 the same package: anyone who could alter them in transit could alter
 `SHA256SUMS` to match. That is what the last row is for. Compare the package's
 hash on the target against a value you carried over a separate channel.
@@ -328,7 +367,9 @@ evaluates JavaScript in the page from `127.0.0.1:$CLAUDE_VLLM_DESKTOP_E2E_PORT`.
 | HTTP 400 from vLLM | Set `log=full`, reproduce, read the request in `~/.claude-vllm/log/`, then set `log` back to `off` |
 | `claude-vllm: command not found` | Open a new terminal so the PATH change applies, or run `export PATH="$HOME/.local/bin:$PATH"` |
 | Linux: `claude` fails with "No such file or directory" though it exists | A musl distribution running the glibc build. Re-stage with `LINUX_PLATFORM=linux-x64-musl` |
-| Linux: `install.sh` warns that gpg is missing | Install `gpg` from your internal mirror and re-run, or accept SHA256-only verification with `--skip-gpg` |
+| Linux: `install.sh` warns that gpg is missing | Install `gpg` from your internal mirror and re-run, or accept SHA256-only verification with `--skip-signature-check` |
+| macOS: "claude-vllm cannot be opened because the developer cannot be verified" | The binary was copied by hand rather than by `install.sh`, so it kept the quarantine flag. Re-run `install.sh`, or `xattr -d com.apple.quarantine ~/.local/bin/claude-vllm` |
+| macOS: `install.sh` says the bundle is for the other architecture | Use `macos-arm64` on Apple silicon and `macos-x64` on Intel Macs |
 | Windows: "The WebView2 runtime was not found" | The package was staged without `WEBVIEW2_CAB` and this machine has no WebView2. Re-stage with it and reinstall |
 | Desktop app opens Settings with a red message | The configuration is incomplete or invalid; the message names the field |
 | Desktop app: "Claude Code exited unexpectedly" | The message shows the tail of Claude Code's stderr. Send another message to resume; if it repeats, run doctor from Settings |
@@ -348,7 +389,7 @@ To uninstall:
 .\install.ps1 -Uninstall      # Windows: executables, webview2\, Start Menu shortcut
 ```
 ```bash
-./install.sh --uninstall      # Linux: binaries and the PATH block
+./install.sh --uninstall      # Linux and macOS: binaries and the PATH block
 ```
 
 Both keep your settings (`~/.claude-vllm`) and Claude Code's sessions

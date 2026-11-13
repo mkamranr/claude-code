@@ -5,6 +5,7 @@
 **Run Claude Code fully offline, against your own vLLM server.**
 No internet, no sign-in, no cloud. Windows, Linux and macOS.
 
+[![Build](https://github.com/mkamranr/claude-code-airgap/actions/workflows/airgap-packages.yml/badge.svg)](https://github.com/mkamranr/claude-code-airgap/actions/workflows/airgap-packages.yml)
 [![Release](https://img.shields.io/github/v/release/mkamranr/claude-code-airgap?label=release&color=2ea44f)](https://github.com/mkamranr/claude-code-airgap/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mkamranr/claude-code-airgap/total?color=blue)](https://github.com/mkamranr/claude-code-airgap/releases)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-informational)](#downloads)
@@ -239,30 +240,27 @@ cache. The desktop app adds one dependency, [Wails v2](https://wails.io).
 
 ## Status
 
-- **Tests:** `go test`, `go vet` and `gofmt` pass on all 9 packages.
-- **Build:** all four packages built from the live release with every
-  verification step.
-- **Windows:**
-  - `install.ps1` tested against the package.
-  - The desktop app driven end to end against `claude.exe` 2.1.252 and a stand-in
-    vLLM.
-- **Linux:**
-  - `install.sh` tested for install, reinstall, uninstall and rejection of tampered
-    files, keys and manifests.
-  - Not yet run on a real Linux host.
-- **macOS:**
-  - `install.sh` tested with stand-in `uname`, `codesign` and `xattr`:
-    signature pinning, quarantine removal, the zsh PATH setup and refusal of
-    the wrong architecture.
-  - Anthropic's Developer ID (Team `Q6L2SF6YDW`) read from the binaries'
-    signatures.
-  - The arm64 bridge confirmed to carry Go's ad-hoc signature.
-  - Not yet run on a real Mac.
+Every push that touches `airgap-vllm/` runs the
+[Air-gap packages workflow](https://github.com/mkamranr/claude-code-airgap/actions/workflows/airgap-packages.yml).
+It tests the code, builds all four packages, then installs each one on a GitHub-hosted
+runner of its own platform:
 
-**Your acceptance checks**, since they need your environment:
+| Platform | What CI checks on a real runner |
+|---|---|
+| Windows x64 | `install.ps1` under Windows PowerShell 5.1 verifies the Anthropic and Microsoft Authenticode signatures, installs the three executables and the WebView2 runtime, runs `claude.exe --version`, and uninstalls |
+| Linux x64 | `install.sh` verifies Anthropic's GPG-signed manifest, installs, runs `claude --version`, rejects a tampered package, and uninstalls |
+| macOS arm64 | `codesign` confirms Anthropic's Developer ID (Team `Q6L2SF6YDW`), along with the GPG check; then the same run, reject and uninstall steps as Linux |
+| macOS x64 | The same checks, with the binaries running under Rosetta 2 on an Apple silicon runner |
+
+The Go tests (`go test`, `go vet`, `gofmt`) run on Linux, Windows and macOS. The
+Windows desktop app has also been driven end to end against `claude.exe` 2.1.252 and
+a stand-in vLLM.
+
+**Your acceptance checks.** CI runners have internet access and no vLLM, so these
+need your environment:
 
 1. `claude-vllm doctor`'s tool-calling test against your model.
-2. The Linux and macOS packages on real hosts.
+2. An install on an actual air-gapped machine, for each platform you deploy.
 3. The desktop app on your air-gapped Windows machine.
 
 ## Credit and license

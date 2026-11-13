@@ -88,7 +88,7 @@ bundle, and the **air-gapped workstation** that consumes it.
 [`claude-vllm-airgap-2.1.252.zip`](https://github.com/mkamranr/claude-code-airgap/releases/download/airgap-2.1.252/claude-vllm-airgap-2.1.252.zip)
 from the [`airgap-2.1.252` release](https://github.com/mkamranr/claude-code-airgap/releases/tag/airgap-2.1.252),
 check its SHA256 against
-`8d093a0e8547e23c7c1f414d65aef768c77df5f5db12e922b7dc4e7eb0201d5f`, and go to
+`67f3102b6a23362519b81704b65ae2b56f208dc6eaef05ed9c2d2e5e2ada958a`, and go to
 step 2. To build the bundle yourself instead:
 
 Requires `curl`, `gpg`, `shasum`, `zip`, `go` and `python3`. **`gpg` is the one commonly

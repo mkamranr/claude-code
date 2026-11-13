@@ -27,8 +27,9 @@ A ready-made bundle (Claude Code 2.1.252, with the desktop app and the WebView2
 runtime) is attached to the
 [`airgap-2.1.252` release](https://github.com/mkamranr/claude-code-airgap/releases/tag/airgap-2.1.252):
 [`claude-vllm-airgap-2.1.252.zip`](https://github.com/mkamranr/claude-code-airgap/releases/download/airgap-2.1.252/claude-vllm-airgap-2.1.252.zip),
-about 420 MB, SHA256
-`8d093a0e8547e23c7c1f414d65aef768c77df5f5db12e922b7dc4e7eb0201d5f`.
+about 420 MB. Its SHA256 is in the release notes and in the repository's
+top-level `README.md`. It is not repeated here because this file ships inside
+the zip, and a zip cannot contain its own hash.
 
 Check that hash before carrying the zip across (`Get-FileHash` in PowerShell,
 `shasum -a 256` elsewhere), then skip to
